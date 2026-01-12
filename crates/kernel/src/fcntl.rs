@@ -108,6 +108,8 @@ impl OMode {
 #[repr(usize)]
 pub enum FcntlCmd {
     SetCloexec = 1,
+    SetNonblock = 2,
+    ClearNonblock = 3,
     Invalid,
 }
 
@@ -115,6 +117,8 @@ impl FcntlCmd {
     pub fn from_usize(bits: usize) -> Self {
         match bits {
             1 => Self::SetCloexec,
+            2 => Self::SetNonblock,
+            3 => Self::ClearNonblock,
             _ => Self::Invalid,
         }
     }

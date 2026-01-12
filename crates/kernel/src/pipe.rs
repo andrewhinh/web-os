@@ -53,6 +53,27 @@ impl Pipe {
         Ok(i)
     }
 
+    pub fn write_nonblock(&self, mut src: VirtAddr, n: usize) -> Result<usize> {
+        let tx = self.tx.as_ref().ok_or(BrokenPipe)?;
+
+        let mut i = 0;
+        while i < n {
+            let mut ch: u8 = 0;
+            either_copyin(&mut ch, src)?;
+            match tx.try_send(ch) {
+                Ok(()) => {
+                    src += 1;
+                    i += 1;
+                }
+                Err(WouldBlock) => {
+                    return if i == 0 { Err(WouldBlock) } else { Ok(i) };
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(i)
+    }
+
     pub fn read(&self, mut dst: VirtAddr, n: usize) -> Result<usize> {
         let rx = self.rx.as_ref().ok_or(BrokenPipe)?;
 
@@ -64,6 +85,26 @@ impl Pipe {
             either_copyout(dst, &ch)?;
             dst += 1;
             i += 1;
+        }
+        Ok(i)
+    }
+
+    pub fn read_nonblock(&self, mut dst: VirtAddr, n: usize) -> Result<usize> {
+        let rx = self.rx.as_ref().ok_or(BrokenPipe)?;
+
+        let mut i = 0;
+        while i < n {
+            match rx.try_recv() {
+                Ok(ch) => {
+                    either_copyout(dst, &ch)?;
+                    dst += 1;
+                    i += 1;
+                }
+                Err(WouldBlock) => {
+                    return if i == 0 { Err(WouldBlock) } else { Ok(i) };
+                }
+                Err(_) => break,
+            }
         }
         Ok(i)
     }

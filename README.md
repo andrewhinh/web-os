@@ -27,13 +27,13 @@ act push --bind                                  # test CI
 
 ### Kernel
 
-- [ ] add dual stream for pipes (kernel-space)
+- [x] add dual stream for pipes (kernel-space)
 - [ ] add [COW mappings](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [ ] add [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [ ] add [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
-- [ ] add cooperative, event-based scheduler for trusted kernel tasks  
-  - [blog_os](https://os.phil-opp.com/async-await/)  
-  - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)  
+- [ ] add cooperative, event-based scheduler for trusted kernel tasks
+  - [blog_os](https://os.phil-opp.com/async-await/)
+  - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)
   - [event-based concurrency](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-events.pdf)
 - [ ] add [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) and replace PLIC with [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
 - [ ] add a [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)

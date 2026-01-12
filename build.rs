@@ -25,7 +25,8 @@ fn main() {
     let mut mkfs_cmd = Command::new(&mkfs_path);
     mkfs_cmd.current_dir(&out_dir);
     mkfs_cmd.arg(fs_img).arg(&readme).args(uprogs);
-    mkfs_cmd.status().expect("mkfs fs.img failed");
+    let status = mkfs_cmd.status().expect("mkfs fs.img failed to run");
+    assert!(status.success(), "mkfs fs.img failed: {status}");
 
     // linker script for kernel
     println!("cargo:rustc-link-arg-bin=web-os=--script=crates/kernel/kernel.ld");

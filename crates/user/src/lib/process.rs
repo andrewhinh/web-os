@@ -159,7 +159,7 @@ impl Stdio {
                 let file = OpenOptions::new()
                     .read(readable)
                     .write(!readable)
-                    .open("null")?;
+                    .open("/dev/null")?;
                 Ok((ChildStdio::Fd(file), None))
             }
         }
@@ -414,11 +414,50 @@ impl<'a> Command<'a> {
             (None, Some(mut err)) => {
                 err.0.read_to_end(&mut stderr)?;
             }
-            (Some(mut _out), Some(mut _err)) => {
-                // need to implement EAGAIN or EWULDBLOCK in pipe.
-                // let res1 = out.0.read_to_end(&mut stdout);
-                // let res2 = err.0.read_to_end(&mut stderr);
-                unimplemented!()
+            (Some(mut out), Some(mut err)) => {
+                // capture both streams without deadlock by
+                // marking pipe FDs nonblocking and interleaving reads
+                out.0.set_nonblock()?;
+                err.0.set_nonblock()?;
+
+                let mut out_done = false;
+                let mut err_done = false;
+                let mut buf = [0u8; 512];
+
+                while !(out_done && err_done) {
+                    let mut progressed = false;
+
+                    if !out_done {
+                        match out.0.read(&mut buf) {
+                            Ok(0) => out_done = true,
+                            Ok(n) => {
+                                stdout.extend_from_slice(&buf[..n]);
+                                progressed = true;
+                            }
+                            Err(sys::Error::WouldBlock) => {}
+                            Err(sys::Error::Interrupted) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+
+                    if !err_done {
+                        match err.0.read(&mut buf) {
+                            Ok(0) => err_done = true,
+                            Ok(n) => {
+                                stderr.extend_from_slice(&buf[..n]);
+                                progressed = true;
+                            }
+                            Err(sys::Error::WouldBlock) => {}
+                            Err(sys::Error::Interrupted) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+
+                    if !progressed && !(out_done && err_done) {
+                        // yield to let the child run and produce output
+                        let _ = sys::sleep(1);
+                    }
+                }
             }
         }
         let status = child.handle.wait()?;

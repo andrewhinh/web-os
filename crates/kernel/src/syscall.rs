@@ -53,6 +53,7 @@ pub enum SysCalls {
     Close = 21,
     Dup2 = 22,
     Fcntl = 23,
+    Nonblock = 24,
     Invalid = 0,
 }
 
@@ -84,9 +85,9 @@ impl SysCalls {
         (Fn::N(Self::exit), "(xstatus: i32)"), /* Terminate the current process; status reported
                                     * to wait(). No Return. */
         (Fn::I(Self::wait), "(xstatus: &mut i32)"), /* Wait for a child to exit; exit status in
-                                                     * &status; retunrs child PID. */
+                                                     * &status; returns child PID. */
         (Fn::U(Self::pipe), "(p: &mut [usize])"), /* Create a pipe, put read/write file
-                                                   * descpritors in p[0] and p[1]. */
+                                                   * descriptors in p[0] and p[1]. */
         (Fn::I(Self::read), "(fd: usize, buf: &mut [u8])"), /* Read n bytes into buf; returns number read; or 0 if end of file */
         (Fn::U(Self::kill), "(pid: usize)"),                /* Terminate process PID. Returns
                                                              * Ok(()) or Err(()) */
@@ -97,17 +98,17 @@ impl SysCalls {
         (Fn::U(Self::fstat), "(fd: usize, st: &mut Stat)"), /* Place info about an open file
                                                              * into st. */
         (Fn::U(Self::chdir), "(dirname: &str)"), // Change the current directory.
-        (Fn::I(Self::dup), "(fd: usize)"),       /* Return a new file descpritor referring to
+        (Fn::I(Self::dup), "(fd: usize)"),       /* Return a new file descriptor referring to
                                                   * the same file as fd. */
         (Fn::I(Self::getpid), "()"), // Return the current process's PID.
-        (Fn::I(Self::sbrk), "(n: usize)"), /* Grow process's memory by n bytes. Returns start fo new
+        (Fn::I(Self::sbrk), "(n: usize)"), /* Grow process's memory by n bytes. Returns start of new
                                       * memory. */
         (Fn::U(Self::sleep), "(n: usize)"), // Pause for n clock ticks.
         (Fn::I(Self::uptime), "()"),        // Return how many clock ticks since start.
         (Fn::I(Self::open), "(filename: &str, flags: usize)"), /* Open a file; flags indicate
                                              * read/write; returns an fd. */
         (Fn::I(Self::write), "(fd: usize, b: &[u8])"), /* Write n bytes from buf to file
-                                                        * descpritor fd; returns n. */
+                                                        * descriptor fd; returns n. */
         (Fn::U(Self::mknod), "(file: &str, mj: usize, mi: usize)"), // Create a device file
         (Fn::U(Self::unlink), "(file: &str)"),                      // Remove a file
         (Fn::U(Self::link), "(file1: &str, file2: &str)"),          /* Create another name
@@ -117,10 +118,19 @@ impl SysCalls {
         (Fn::U(Self::close), "(fd: usize)"), // Release open file fd.
         (Fn::I(Self::dup2), "(src: usize, dst: usize)"), //
         (Fn::I(Self::fcntl), "(fd: usize, cmd: FcntlCmd)"), //
+        (Fn::I(Self::nonblock), "(fd: usize, on: usize)"), //
     ];
 
     pub fn invalid() -> ! {
-        unimplemented!()
+        // syscall() should never dispatch here
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            exit(-1)
+        }
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -331,7 +341,9 @@ fn fdalloc(file: File) -> Result<usize> {
 impl SysCalls {
     pub fn exit() -> ! {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
-        unimplemented!();
+        loop {
+            core::hint::spin_loop();
+        }
         #[cfg(all(target_os = "none", feature = "kernel"))]
         {
             exit(argraw(0) as i32)
@@ -706,6 +718,23 @@ impl SysCalls {
             f.do_fcntl(cmd)
         }
     }
+
+    pub fn nonblock() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut _fd = 0;
+            let (f, _) = File::from_arg(0, &mut _fd)?;
+            let on = argraw(1) != 0;
+            let cmd = if on {
+                FcntlCmd::SetNonblock
+            } else {
+                FcntlCmd::ClearNonblock
+            };
+            f.do_fcntl(cmd)
+        }
+    }
 }
 
 impl SysCalls {
@@ -734,6 +763,7 @@ impl SysCalls {
             21 => Self::Close,
             22 => Self::Dup2,
             23 => Self::Fcntl,
+            24 => Self::Nonblock,
             _ => Self::Invalid,
         }
     }
@@ -878,7 +908,6 @@ pub {} {{
             },
             indent = indent
         );
-        // Rust 2024: `gen` is reserved (generator syntax), avoid as identifier.
         let mut out: Vec<String> = Vec::new();
         out.push(part1);
         out.append(&mut part2);

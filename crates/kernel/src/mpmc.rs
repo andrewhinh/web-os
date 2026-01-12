@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::condvar::Condvar;
-use crate::error::{Error::NotConnected, Result};
+use crate::error::{Error::NotConnected, Error::WouldBlock, Result};
 use crate::semaphore::Semaphore;
 use crate::spinlock::Mutex;
 
@@ -33,6 +33,16 @@ impl<T: Debug> Clone for SyncSender<T> {
 impl<T: Send + Debug> SyncSender<T> {
     pub fn send(&self, data: T) -> Result<()> {
         self.sem.wait()?;
+        let mut buf = self.buf.lock();
+        buf.push_back(data);
+        self.cond.notify_all();
+        Ok(())
+    }
+
+    pub fn try_send(&self, data: T) -> Result<()> {
+        if !self.sem.try_wait()? {
+            return Err(WouldBlock);
+        }
         let mut buf = self.buf.lock();
         buf.push_back(data);
         self.cond.notify_all();
@@ -76,6 +86,19 @@ impl<T: Debug> Receiver<T> {
             } else {
                 break Err(NotConnected);
             }
+        }
+    }
+
+    pub fn try_recv(&self) -> Result<T> {
+        let mut buf = self.buf.lock();
+        if let Some(data) = buf.pop_front() {
+            self.sem.post();
+            return Ok(data);
+        }
+        if self.scnt.load(Ordering::Relaxed) > 0 {
+            Err(WouldBlock)
+        } else {
+            Err(NotConnected)
         }
     }
 }

@@ -94,6 +94,16 @@ name = "_touch"
 path = "src/bin/touch.rs"
 test = false
 
+[[bin]]
+name = "_pdual_demo"
+path = "src/bin/pdual_demo.rs"
+test = false
+
+[[bin]]
+name = "_pdual_child"
+path = "src/bin/pdual_child.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

@@ -47,6 +47,7 @@ pub struct File {
     readable: bool,
     writable: bool,
     cloexec: bool,
+    nonblock: bool,
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -203,7 +204,10 @@ impl File {
         if !self.readable {
             return Err(InvalidArgument);
         }
-        self.f.as_ref().unwrap().read(dst, n)
+        match self.f.as_ref().unwrap().as_ref() {
+            VFile::Pipe(p) if self.nonblock => p.read_nonblock(dst, n),
+            _ => self.f.as_ref().unwrap().read(dst, n),
+        }
     }
 
     // Write to file.
@@ -211,7 +215,10 @@ impl File {
         if !self.writable {
             return Err(InvalidArgument);
         }
-        self.f.as_ref().unwrap().write(src, n)
+        match self.f.as_ref().unwrap().as_ref() {
+            VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
+            _ => self.f.as_ref().unwrap().write(src, n),
+        }
     }
 
     pub fn is_cloexec(&self) -> bool {
@@ -226,6 +233,8 @@ impl File {
         use FcntlCmd::*;
         match cmd {
             SetCloexec => self.cloexec = true,
+            SetNonblock => self.nonblock = true,
+            ClearNonblock => self.nonblock = false,
             _ => return Err(InvalidArgument),
         }
         Ok(0)
@@ -343,6 +352,7 @@ impl FTable {
             readable: opts.is_read(),
             writable: opts.is_write(),
             cloexec: opts.is_cloexec(),
+            nonblock: false,
         })
     }
 }

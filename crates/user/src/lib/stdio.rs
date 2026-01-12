@@ -37,7 +37,11 @@ impl Stdin {
     }
 
     pub fn replace(&mut self, src: &File) -> sys::Result<()> {
-        File::dup2(src, &mut self.get_inner().get().unwrap().lock())
+        let inner = self
+            .get_inner()
+            .get_or_init(|| Mutex::new(unsafe { File::from_raw_fd(STDIN_FILENO) }));
+        let mut dst = inner.lock();
+        File::dup2(src, &mut dst)
     }
 
     pub fn read_line(&mut self, buf: &mut String) -> sys::Result<usize> {
@@ -89,7 +93,11 @@ impl Stdout {
     }
 
     pub fn replace(&mut self, src: &File) -> sys::Result<()> {
-        File::dup2(src, &mut self.get_inner().get().unwrap().lock())
+        let inner = self
+            .get_inner()
+            .get_or_init(|| Mutex::new(unsafe { File::from_raw_fd(STDOUT_FILENO) }));
+        let mut dst = inner.lock();
+        File::dup2(src, &mut dst)
     }
 }
 
@@ -124,7 +132,11 @@ impl Stderr {
     }
 
     pub fn replace(&mut self, src: &File) -> sys::Result<()> {
-        File::dup2(src, &mut self.get_inner().get().unwrap().lock())
+        let inner = self
+            .get_inner()
+            .get_or_init(|| Mutex::new(unsafe { File::from_raw_fd(STDERR_FILENO) }));
+        let mut dst = inner.lock();
+        File::dup2(src, &mut dst)
     }
 }
 

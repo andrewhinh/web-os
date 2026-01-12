@@ -66,6 +66,14 @@ impl File {
     pub fn set_cloexec(&mut self) -> sys::Result<usize> {
         sys::fcntl(self.0, FcntlCmd::SetCloexec)
     }
+
+    pub fn set_nonblock(&mut self) -> sys::Result<usize> {
+        sys::nonblock(self.0, 1).map(|_| 0)
+    }
+
+    pub fn clear_nonblock(&mut self) -> sys::Result<usize> {
+        sys::nonblock(self.0, 0).map(|_| 0)
+    }
 }
 
 impl Drop for File {
