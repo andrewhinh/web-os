@@ -87,7 +87,7 @@ pub extern "C" fn usertrap() -> ! {
         _ => {
             let mut inner = p.inner.lock();
             println!(
-                "usertrap(): unexcepted scause {:?}, pid={:?}",
+                "usertrap(): unexpected scause {:?}, pid={:?}",
                 scause::read().cause(),
                 inner.pid
             );
@@ -144,19 +144,19 @@ pub unsafe extern "C" fn usertrap_ret() -> ! {
     // set up the registers that trampoline.rs's sret will use
     // to get to user space.
 
-    // set S Previous Priviledge mode to User.
+    // set S Previous Privilege mode to User.
     unsafe {
         sstatus::set_spp(sstatus::SPP::User); // clear SPP to 0 for user mode.
         sstatus::set_spie(); // enable interrupts in user mode.
     }
 
-    // set S Exception Program Counter Counter to the saved user pc.
+    // set S Exception Program Counter to the saved user pc.
     sepc::write(tf.epc);
 
     // tell trampoline.rs the user page table to switch to.
     let satp = data.uvm.as_ref().unwrap().as_satp();
 
-    // jump to trampoline.rs at the top of memory, witch
+    // jump to trampoline.rs at the top of memory, which
     // switches to the user page table, restores user registers,
     // and switches to user mode with sret.
 

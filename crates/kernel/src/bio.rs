@@ -5,7 +5,7 @@
 // in memory reduces the number of disk blocks used by multiple processes.
 //
 // Interface:
-// * To get a buffer for a particular disk block, call BCAHCE.read() and get
+// * To get a buffer for a particular disk block, call BCACHE.read() and get
 //   BufGuard.
 // * After changing buffer data, call BufGuard.write to write it to disk.
 // * When done with the buffer, drop(BufGuard) with relse.

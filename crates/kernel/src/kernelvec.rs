@@ -1,7 +1,7 @@
 use core::arch::naked_asm;
 
 // interrupts and exceptions while in supervisor mode come here.
-// push all registers, call kerneltrap(), restorem return.
+// push all registers, call kerneltrap(), restore and return.
 #[unsafe(naked)]
 #[rustc_align(16)]
 #[unsafe(no_mangle)]
@@ -90,13 +90,13 @@ pub unsafe extern "C" fn timervec() -> ! {
     // scratch[24] : address of CLINT's MTIMECMP register.
     // scratch[32] : desired interval between interrupts.
 
-    // Now, mscrach has a pointer to an additional scratch space.
-    // to aboid overwriting the contents of the integer registers,
+    // Now, mscratch has a pointer to an additional scratch space.
+    // to avoid overwriting the contents of the integer registers,
     // the prologue of an interrupts handler usually begins by swapping
     // an integer register(say a0) with mscratch CSR.
     // The interrupt handler stores the integer registers
     // used for processing in this scratch space.
-    // a0 saved in mscrach, a1 ~ a3 saved in scratch space.
+    // a0 saved in mscratch, a1 ~ a3 saved in scratch space.
     // loop {}
     naked_asm!(
         "csrrw a0, mscratch, a0",

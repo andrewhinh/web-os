@@ -142,7 +142,7 @@ impl BuddyAllocator {
             // In this case, since self.base and self.end are already aligned to
             // max_align, we only need to consider the size.
 
-            // Find a free block > layout.size, staring with smallest k possible
+            // Find a free block > layout.size, starting with smallest k possible
             let fk = self.firstk(layout.size());
             let mut k = fk;
             for szinfo in sizes.get(fk..self.nsize)?.iter() {
@@ -256,11 +256,9 @@ impl BuddyAllocator {
                 // one of the pair is free
                 unsafe {
                     if sizes[k].alloc.bit_isset(bi) {
-                        sizes[k].free.push(self.addr(k, buddy)); // put buddy on
-                    // free list
+                        sizes[k].free.push(self.addr(k, buddy)); // put buddy on free list
                     } else {
-                        sizes[k].free.push(self.addr(k, bi)); // put bi on free
-                        // list
+                        sizes[k].free.push(self.addr(k, bi)); // put bi on free list
                     }
                 }
                 Self::blk_size(k)
@@ -343,7 +341,7 @@ impl BuddyAllocator {
                 szinfo.split.replace(init_nonnull_slice(&mut p, sz));
             }
 
-            // p address my not be aligned now
+            // p address may not be aligned now
             p = round_up(p, Self::LEAF_SIZE);
 
             // done allocating; mark the memory range [base, p) as allocated, so
@@ -358,7 +356,7 @@ impl BuddyAllocator {
             // initialize free lists for each size k
             let free = self.initfree(p);
 
-            // check if the amount that is free is what we except
+            // check if the amount that is free is what we expect
             if free != Self::blk_size(self.max_size()) - meta - unavailable {
                 return Err("allocator bug: free != total - meta - unavailable");
             }

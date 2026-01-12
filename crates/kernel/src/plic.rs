@@ -27,7 +27,7 @@ pub fn inithart() {
     }
 }
 
-// ask the PLIC what interrupt we shold serve.
+// ask the PLIC what interrupt we should serve.
 pub fn claim() -> Option<u32> {
     unsafe {
         let hart = Cpus::cpu_id();

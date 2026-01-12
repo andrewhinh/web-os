@@ -94,7 +94,7 @@ impl Log {
         self.write_head(); // clear the log
     }
 
-    // Copy comitted blocks from log to their home location
+    // Copy committed blocks from log to their home location
     fn install_trans(&self, recovering: bool) {
         for tail in 0..self.lh.n {
             let lbuf = BCACHE.read(self.dev, self.start + tail + 1); // read log block
@@ -120,7 +120,7 @@ impl Log {
     fn commit(&mut self) {
         if self.lh.n > 0 {
             self.write_log(); // Write modified blocks from cache to log
-            self.write_head(); // Wrtie header to disk -- the real commit
+            self.write_head(); // Write header to disk -- the real commit
             self.install_trans(false); // Now install writes to home locations
             self.lh.n = 0;
             self.write_head();
@@ -162,7 +162,7 @@ impl Mutex<Log> {
             let mut guard = self.lock();
             guard.outstanding -= 1;
             if guard.committing {
-                panic!("log.commiting");
+                panic!("log.committing");
             }
             if guard.outstanding == 0 {
                 log.replace(guard.deref_mut() as *mut _);

@@ -28,7 +28,7 @@ fn main() {
             break;
         }
     }
-    set_path_fron_etc_paths().unwrap();
+    set_path_from_etc_paths().unwrap();
 
     // read and run input commands.
     'main: loop {
@@ -100,8 +100,8 @@ fn main() {
                             append = true;
                         }
                         rawstring = args.collect::<Vec<&str>>().concat();
-                        let splited = rawstring.split('>');
-                        for (i, e) in splited.enumerate() {
+                        let split = rawstring.split('>');
+                        for (i, e) in split.enumerate() {
                             if e.is_empty() {
                                 continue;
                             }
@@ -145,7 +145,7 @@ fn main() {
     }
 }
 
-fn set_path_fron_etc_paths() -> sys::Result<()> {
+fn set_path_from_etc_paths() -> sys::Result<()> {
     let path_file = "/etc/paths";
     if Path::new(path_file).exists() {
         let file = BufReader::new(File::open(path_file)?);

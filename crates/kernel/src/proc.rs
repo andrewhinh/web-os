@@ -160,13 +160,13 @@ pub struct Context {
 // to the page immediately below the trampoline page in the user page
 // table. It is not mapped in the kernel page table. uservec() in trampoline.rs
 // stores user registers in trapframe, restore registers from kernel_sp,
-// kernel_hertid, and kernel_satp of trapframe, and jumps to the address
+// kernel_hartid, and kernel_satp of trapframe, and jumps to the address
 // pointed to by kernel_trap (usertrap()). The sequence of usertrap_ret()
 // in trap.rs and userret() in trampoline.rs sets up kernel_* in trapframe,
 // restores the user registers from trapframe, switches to the user page
 // table and user space enters the user space. The return path to the
 // user via usertrap_ret() does not return through the entire kernel
-// call stack, so the trapframe contains calle-saved user registers
+// call stack, so the trapframe contains callee-saved user registers
 // such as s0-s11.
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C, align(4096))]
@@ -263,7 +263,7 @@ pub struct Proc {
 }
 unsafe impl Sync for Proc {}
 
-// lock must be held when uding these:
+// lock must be held when using these:
 #[derive(Clone, Copy, Debug)]
 pub struct ProcInner {
     pub state: ProcState, // Process state
@@ -278,10 +278,10 @@ pub struct ProcInner {
 pub struct ProcData {
     pub kstack: KVAddr,                    // Virtual address of kernel stack
     pub sz: usize,                         // Size of process memory (bytes)
-    pub uvm: Option<Uvm>,                  // User Memory Page Tabel
-    pub trapframe: Option<Box<Trapframe>>, // data page for trampline.rs
+    pub uvm: Option<Uvm>,                  // User Memory Page Table
+    pub trapframe: Option<Box<Trapframe>>, // data page for trampoline.rs
     pub context: Context,                  // swtch() here to run process
-    pub name: String,                      // Process name (debuggig)
+    pub name: String,                      // Process name (debugging)
     pub ofile: [Option<File>; NOFILE],     // Open files
     pub cwd: Option<Inode>,                // Current directory
 }
@@ -588,7 +588,7 @@ pub fn user_init(initcode: &'static [u8]) {
     for _ in 0..elf.e_phnum {
         unsafe {
             let (head, body, _) = initcode[off..(off + size_of::<ProgHdr>())].align_to::<ProgHdr>();
-            assert!(head.is_empty(), "elf prong header is not aligned");
+            assert!(head.is_empty(), "elf program header is not aligned");
             phdr = *body.first().unwrap();
         }
         if phdr.p_type != elf::PT_LOAD || phdr.p_fsize == 0 {
@@ -666,7 +666,7 @@ impl Default for ProcData {
     }
 }
 
-// A fork child's very first scheduling by shceduler()
+// A fork child's very first scheduling by scheduler()
 // will swtch to fork_ret().
 pub unsafe extern "C" fn fork_ret() -> ! {
     static mut FIRST: bool = true;
@@ -712,13 +712,13 @@ pub fn dump() {
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns. It loops, doing:
 //  - choose a process to run.
-//  - swtch to start running thet process.
+//  - swtch to start running that process.
 //  - eventually that process transfers control via swtch back to the scheduler.
 pub fn scheduler() -> ! {
     let c = unsafe { CPUS.mycpu() };
 
     loop {
-        // Avoid deadlock by ensuring thet devices can interrupt.
+        // Avoid deadlock by ensuring that devices can interrupt.
         intr_on();
 
         for p in PROCS.pool.iter() {
@@ -757,7 +757,7 @@ fn sched<'a>(guard: MutexGuard<'a, ProcInner>, ctx: &mut Context) -> MutexGuard<
             guard,
             BCACHE
         );
-        assert!(guard.state != ProcState::RUNNING, "shced running");
+        assert!(guard.state != ProcState::RUNNING, "sched running");
         assert!(!intr_get(), "sched interruptible");
 
         let intena = c.intena;
@@ -798,7 +798,6 @@ pub fn exit(status: i32) -> ! {
         let mut parents = PROCS.parents.lock();
         // Pass p's abandoned children to init.
         for opp in parents.iter_mut().filter(|pp| pp.is_some()) {
-            // Rust 2024: avoid `ref` patterns w implicit borrowing modes.
             let is_parent = opp.as_ref().is_some_and(|pp| Arc::ptr_eq(pp, &p));
             if is_parent {
                 let initproc = INITPROC.get().unwrap();
@@ -820,7 +819,7 @@ pub fn exit(status: i32) -> ! {
 }
 
 // Atomically release lock and sleep on chan.
-// Reacquires lock when awakend.
+// Reacquires lock when awakened.
 pub fn sleep<T>(chan: usize, mutex_guard: MutexGuard<'_, T>) -> MutexGuard<'_, T> {
     // Must acquire "proc" lock in order to
     // change proc.state and then call sched.
@@ -939,7 +938,7 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
         for c in PROCS.pool.iter() {
             match parents[c.idx] {
                 Some(ref pp) if Arc::ptr_eq(pp, &p) => {
-                    // macke sure the child isn't still in exit() or swtch().
+                    // make sure the child isn't still in exit() or swtch().
                     let c_guard = c.inner.lock();
                     havekids = true;
                     if c_guard.state == ProcState::ZOMBIE {

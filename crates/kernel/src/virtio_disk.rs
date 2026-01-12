@@ -26,7 +26,7 @@ enum VirtioMMIO {
     // device type; 1 is net, 2 is disk
     DeviceId = 0x008,
     // 0x554d4552
-    VenderId = 0x00c,
+    VendorId = 0x00c,
     DeviceFeatures = 0x010,
     DriverFeatures = 0x020,
     // select queue, write-only
@@ -45,7 +45,7 @@ enum VirtioMMIO {
     InterruptAck = 0x064,
     // read/write
     Status = 0x070,
-    // physical address for descpritor table, write-only
+    // physical address for descriptor table, write-only
     QueueDescLow = 0x080,
     QueueDescHigh = 0x084,
     // physical address for available ring, write-only
@@ -62,7 +62,9 @@ impl VirtioMMIO {
     }
 
     unsafe fn write(self, data: u32) {
-        unsafe { core::ptr::write_volatile((VIRTIO0 + self as usize) as *mut u32, data) };
+        unsafe {
+            core::ptr::write_volatile((VIRTIO0 + self as usize) as *mut u32, data);
+        }
     }
 }
 
@@ -96,10 +98,10 @@ const NUM: usize = 8;
 
 #[repr(C)]
 pub struct Disk {
-    // a set (not a ring) of DMA descpritors, with which the
+    // a set (not a ring) of DMA descriptors, with which the
     // driver tells the device where to read and write individual
-    // disk operations. there are NUM descpritors.
-    // most commands consists of a "chain" (a linked list) of couple of
+    // disk operations. there are NUM descriptors.
+    // most commands consist of a "chain" (a linked list) of a couple of
     // these descriptors.
     desc: [VirtqDesc; NUM],
 
@@ -118,7 +120,7 @@ pub struct Disk {
     free: [bool; NUM], // is a descriptor free ?
     used_idx: u16,     // we've looked this far in used[2..NUM].
 
-    // track info aboud in-flight operations,
+    // track info about in-flight operations,
     // for use when completion interrupt arrives.
     // indexed by first descriptor index of chain.
     info: [Info; NUM],
@@ -128,7 +130,7 @@ pub struct Disk {
     ops: [VirtioBlkReq; NUM],
 }
 
-// a single descriptor, from the spc
+// a single descriptor, from the spec
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(16))]
 struct VirtqDesc {
@@ -158,7 +160,7 @@ impl VirtqDesc {
     }
 }
 
-// the (entire) avail ring, from the spc
+// the (entire) avail ring, from the spec
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(2))]
 struct VirtqAvail {
@@ -212,7 +214,7 @@ impl VirtqUsed {
     }
 }
 
-// track info aboud in-flight operations,
+// track info about in-flight operations,
 // for use when completion interrupt arrives.
 // indexed by first descriptor index of chain.
 #[repr(C)]
@@ -271,97 +273,101 @@ impl Disk {
     }
 
     unsafe fn init(&mut self) {
-        let mut status: VirtioStatus = 0;
+        unsafe {
+            let mut status: VirtioStatus = 0;
 
-        if VirtioMMIO::MagicValue.read() != 0x74726976
-            || VirtioMMIO::Version.read() != 2
-            || VirtioMMIO::DeviceId.read() != 2
-            || VirtioMMIO::VenderId.read() != 0x554d4551
-        {
-            panic!("could not find virtio disk");
+            if VirtioMMIO::MagicValue.read() != 0x74726976
+                || VirtioMMIO::Version.read() != 2
+                || VirtioMMIO::DeviceId.read() != 2
+                || VirtioMMIO::VendorId.read() != 0x554d4551
+            {
+                panic!("could not find virtio disk");
+            }
+
+            // reset device
+            VirtioMMIO::Status.write(status);
+
+            // set ACKNOWLEDGE status bit
+            status |= virtio_status::ACKNOWLEDGE;
+            VirtioMMIO::Status.write(status);
+
+            // set DRIVER status bit
+            status |= virtio_status::DRIVER;
+            VirtioMMIO::Status.write(status);
+
+            // negotiate features
+            let mut features = VirtioMMIO::DeviceFeatures.read();
+            features &= !(virtio_features::BLK_F_RO);
+            features &= !(virtio_features::BLK_F_SCSI);
+            features &= !(virtio_features::BLK_F_CONFIG_WCE);
+            features &= !(virtio_features::BLK_F_MQ);
+            features &= !(virtio_features::F_ANY_LAYOUT);
+            features &= !(virtio_features::RING_F_EVENT_IDX);
+            features &= !(virtio_features::RING_F_INDIRECT_DESC);
+            VirtioMMIO::DriverFeatures.write(features);
+
+            // tell device that feature negotiation is complete.
+            status |= virtio_status::FEATURES_OK;
+            VirtioMMIO::Status.write(status);
+
+            // re-read status to ensure FEATURES_OK is set.
+            status = VirtioMMIO::Status.read();
+            assert!(
+                status & virtio_status::FEATURES_OK != 0,
+                "virtio disk FEATURES_OK unset"
+            );
+
+            // initialize queue 0.
+            VirtioMMIO::QueueSel.write(0);
+
+            // ensure queue 0 is not in use
+            assert!(
+                VirtioMMIO::QueueReady.read() == 0,
+                "virtio disk should not be ready"
+            );
+
+            // check maximum queue size.
+            let max = VirtioMMIO::QueueNumMax.read();
+            assert!(max != 0, "virtio disk has no queue 0");
+            assert!(max >= NUM as u32, "virtio disk max queue too short");
+
+            // set queue size.
+            VirtioMMIO::QueueNum.write(NUM as _);
+
+            // write physical addresses.
+            VirtioMMIO::QueueDescLow.write(&self.desc as *const _ as u64 as u32);
+            VirtioMMIO::QueueDescHigh.write((&self.desc as *const _ as u64 >> 32) as u32);
+            VirtioMMIO::DriverDescLow.write(&self.avail as *const _ as u64 as u32);
+            VirtioMMIO::DriverDescHigh.write((&self.avail as *const _ as u64 >> 32) as u32);
+            VirtioMMIO::DeviceDescLow.write(&self.used as *const _ as u64 as u32);
+            VirtioMMIO::DeviceDescHigh.write((&self.used as *const _ as u64 >> 32) as u32);
+
+            // queue is ready.
+            VirtioMMIO::QueueReady.write(0x1);
+
+            // all NUM descriptors start out unused.
+            self.free.iter_mut().for_each(|f| *f = true);
+
+            // tell device we're completely ready.
+            status |= virtio_status::DRIVER_OK;
+            VirtioMMIO::Status.write(status);
+
+            // plic.rs and trap.rs arrange for interrupts from VIRTIO0_IRQ.
         }
-
-        // reset device
-        unsafe { VirtioMMIO::Status.write(status) };
-
-        // set ACKNOWLEDGE status bit
-        status |= virtio_status::ACKNOWLEDGE;
-        unsafe { VirtioMMIO::Status.write(status) };
-
-        // set DRIVER status bit
-        status |= virtio_status::DRIVER;
-        unsafe { VirtioMMIO::Status.write(status) };
-
-        // negotiate features
-        let mut features = VirtioMMIO::DeviceFeatures.read();
-        features &= !(virtio_features::BLK_F_RO);
-        features &= !(virtio_features::BLK_F_SCSI);
-        features &= !(virtio_features::BLK_F_CONFIG_WCE);
-        features &= !(virtio_features::BLK_F_MQ);
-        features &= !(virtio_features::F_ANY_LAYOUT);
-        features &= !(virtio_features::RING_F_EVENT_IDX);
-        features &= !(virtio_features::RING_F_INDIRECT_DESC);
-        unsafe { VirtioMMIO::DriverFeatures.write(features) };
-
-        // tell device that feature negotiation is complete.
-        status |= virtio_status::FEATURES_OK;
-        unsafe { VirtioMMIO::Status.write(status) };
-
-        // re-read status to ensure FEATURES_OK is set.
-        status = VirtioMMIO::Status.read();
-        assert!(
-            status & virtio_status::FEATURES_OK != 0,
-            "virtio disk FEATURES_OK unset"
-        );
-
-        // initialize queue 0.
-        unsafe { VirtioMMIO::QueueSel.write(0) };
-
-        // ensure queue 0 is not in use
-        assert!(
-            VirtioMMIO::QueueReady.read() == 0,
-            "virtio disk shoud not be ready"
-        );
-
-        // check maximum queue size.
-        let max = VirtioMMIO::QueueNumMax.read();
-        assert!(max != 0, "virtio disk has no queue 0");
-        assert!(max >= NUM as u32, "virtio disk max queue too short");
-
-        // set queue size.
-        unsafe { VirtioMMIO::QueueNum.write(NUM as _) };
-
-        // write physical addresses.
-        unsafe { VirtioMMIO::QueueDescLow.write(&self.desc as *const _ as u64 as u32) };
-        unsafe { VirtioMMIO::QueueDescHigh.write((&self.desc as *const _ as u64 >> 32) as u32) };
-        unsafe { VirtioMMIO::DriverDescLow.write(&self.avail as *const _ as u64 as u32) };
-        unsafe { VirtioMMIO::DriverDescHigh.write((&self.avail as *const _ as u64 >> 32) as u32) };
-        unsafe { VirtioMMIO::DeviceDescLow.write(&self.used as *const _ as u64 as u32) };
-        unsafe { VirtioMMIO::DeviceDescHigh.write((&self.used as *const _ as u64 >> 32) as u32) };
-
-        // queue is ready.
-        unsafe { VirtioMMIO::QueueReady.write(0x1) };
-
-        // all NUM descriptors start out unused.
-        self.free.iter_mut().for_each(|f| *f = true);
-
-        // tell device we're completely ready.
-        status |= virtio_status::DRIVER_OK;
-        unsafe { VirtioMMIO::Status.write(status) };
-
-        // plic.rs and trap.rs arrange for interrupts from VIRTIO0_IRQ.
     }
 
     // find a free descriptor, mark it non-free, return its index.
     fn alloc_desc(&mut self) -> Option<usize> {
-        self.free.iter_mut().enumerate().find_map(|(i, v)| {
-            if *v {
+        self.free
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, v)| **v)
+            .take(1)
+            .map(|(i, v)| {
                 *v = false;
-                Some(i)
-            } else {
-                None
-            }
-        })
+                i
+            })
+            .next()
     }
 
     // mark a descriptor as free.
@@ -471,7 +477,7 @@ impl Mutex<Disk> {
         b.disk = true;
         guard.info[idx[0]].buf.replace(b);
 
-        // tell the device the first index in our chain of decriptors.
+        // tell the device the first index in our chain of descriptors.
         let i = guard.avail.idx as usize % NUM;
         guard.avail.ring[i] = idx[0].try_into().unwrap();
 
@@ -506,7 +512,7 @@ impl Mutex<Disk> {
         // this may race with the device writing new entries to
         // the "used" ring, in which case we may process the new
         // completion entries in this interrupt, and have nothing to do
-        // in the next interrup, whish is harmless.
+        // in the next interrupt, which is harmless.
         let intr_stat = VirtioMMIO::InterruptStatus.read();
         unsafe {
             VirtioMMIO::InterruptAck.write(intr_stat & 0x3);

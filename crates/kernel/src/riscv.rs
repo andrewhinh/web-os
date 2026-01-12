@@ -353,7 +353,7 @@ pub mod registers {
             NAPOT = 0b11,
         }
 
-        // Set the pmp configuration corresponging to the index
+        // Set the pmp configuration corresponding to the index
         #[inline]
         pub unsafe fn set_pmp(index: usize, range: Range, permission: Permission, locked: bool) {
             unsafe {
@@ -398,7 +398,7 @@ pub mod registers {
     pub mod satp {
         use core::arch::asm;
 
-        // stap register
+        // satp register
         #[derive(Clone, Copy, Debug)]
         pub struct Satp {
             bits: usize,

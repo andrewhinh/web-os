@@ -94,7 +94,7 @@ pub unsafe extern "C" fn uservec() -> ! {
 #[unsafe(no_mangle)]
 #[rustc_align(16)]
 pub unsafe extern "C" fn userret(pagetable: usize) -> ! {
-    // userret(TRAPFLAME, pagetable)
+    // userret(TRAPFRAME, pagetable)
     // called by usertrap_ret() in trap.rs to
     // switch from kernel to user.
     // a0: TRAPFRAME, in user page table.
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn userret(pagetable: usize) -> ! {
         "csrw satp, a0",
         "sfence.vma zero, zero",
         // put the saved user a0 in sscratch, so we
-        // can swap it with our a0 (TRAPRAME)
+        // can swap it with our a0 (TRAPFRAME)
         // set TRAPFRAME to a0
         "li a0, {tf}",
         // restore all but a0 from TRAPFRAME

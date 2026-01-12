@@ -64,7 +64,7 @@ impl Uart {
     }
 
     pub fn init(&mut self) {
-        // diable interrupts.
+        // disable interrupts.
         self.write(Ier, 0x00);
 
         // special mode to set baud rate.
@@ -77,7 +77,7 @@ impl Uart {
         self.write(Ier, 0x00);
 
         // leave set-baud mode,
-        // and set worf length to 8 bits, no parity.
+        // and set word length to 8 bits, no parity.
         self.write(Lcr, LCR_EIGHT_BITS);
 
         // reset and enable FIFOs
@@ -102,7 +102,7 @@ impl Uart {
     fn start(&mut self) {
         loop {
             if self.tx_w == self.tx_r {
-                // trasnmit buffer is empty.
+                // transmit buffer is empty.
                 break;
             }
 
@@ -165,7 +165,7 @@ impl Mutex<Uart> {
     }
 
     // handle a uart interrupt, raised because input has
-    // arraived, or the uart is ready more output, or
+    // arrived, or the uart is ready more output, or
     // both. called from trap.c
     pub fn intr(&self) {
         // read and process incoming characters

@@ -68,7 +68,7 @@ impl Device for Mutex<Cons> {
             if c == ctrl(b'D') {
                 // end of line
                 if n < target {
-                    // Save ^D for nexst time, to make sure
+                    // Save ^D for next time, to make sure
                     // caller gets a 0-bytes result.
                     cons_guard.r -= Wrapping(1);
                 }

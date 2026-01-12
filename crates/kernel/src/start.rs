@@ -81,7 +81,7 @@ unsafe fn timerinit() {
         // enable machine-mode interrupts.
         mstatus::set_mie();
 
-        // enable machime-mode timer interrupts.
+        // enable machine-mode timer interrupts.
         mie::set_mtimer();
     }
 }
