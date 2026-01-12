@@ -1,0 +1,101 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "uprogs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+forced-target = "riscv64gc-unknown-none-elf"
+
+[lib]
+name = "ulib"
+path = "src/lib/lib.rs"
+test = false
+
+[[bin]]
+name = "_cat"
+path = "src/bin/cat.rs"
+test = false
+
+[[bin]]
+name = "_echo"
+path = "src/bin/echo.rs"
+test = false
+
+[[bin]]
+name = "_grep"
+path = "src/bin/grep.rs"
+test = false
+
+[[bin]]
+name = "_init"
+path = "src/bin/init.rs"
+test = false
+
+[[bin]]
+name = "_initcode"
+path = "src/bin/initcode.rs"
+test = false
+
+[[bin]]
+name = "_kill"
+path = "src/bin/kill.rs"
+test = false
+
+[[bin]]
+name = "_ln"
+path = "src/bin/ln.rs"
+test = false
+
+[[bin]]
+name = "_ls"
+path = "src/bin/ls.rs"
+test = false
+
+[[bin]]
+name = "_mkdir"
+path = "src/bin/mkdir.rs"
+test = false
+
+[[bin]]
+name = "_rm"
+path = "src/bin/rm.rs"
+test = false
+
+[[bin]]
+name = "_sh"
+path = "src/bin/sh.rs"
+test = false
+
+[[bin]]
+name = "_wc"
+path = "src/bin/wc.rs"
+test = false
+
+[[bin]]
+name = "_head"
+path = "src/bin/head.rs"
+test = false
+
+[[bin]]
+name = "_clear"
+path = "src/bin/clear.rs"
+test = false
+
+[[bin]]
+name = "_sleep"
+path = "src/bin/sleep.rs"
+test = false
+
+[[bin]]
+name = "_touch"
+path = "src/bin/touch.rs"
+test = false
+
+[dependencies]
+libkernel = { workspace = true }
+
+[build-dependencies]
+libkernel = { workspace = true }

@@ -1,0 +1,28 @@
+# required for rust-analyzer
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+# for testing
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "link-arg=-Tcrates/kernel/kernel.ld"]
+runner = [
+    "qemu-system-riscv64",
+    "-machine",
+    "virt",
+    "-bios",
+    "none",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-serial",
+    "mon:stdio",
+    "-nographic",
+    "-global",
+    "virtio-mmio.force-legacy=false",
+    "-drive",
+    "file=../../target/fs.img,if=none,format=raw,id=x0",
+    "-device",
+    "virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0",
+    "-kernel",
+]

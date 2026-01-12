@@ -1,0 +1,32 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "web-os"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+forced-target = "riscv64gc-unknown-none-elf"
+
+[[bin]]
+name = "web-os"
+path = "crates/kernel/src/main.rs"
+test = false
+
+[workspace]
+members = ["crates/kernel", "crates/mkfs", "crates/user"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["Andrew Hinh <ajhinh@gmail.com>"]
+license = "MIT/Apache-2.0"
+repository = "https://github.com/andrewhinh/web-os"
+
+[workspace.dependencies]
+libkernel = { path = "crates/kernel", default-features = false }
+
+[dependencies]
+libkernel = { workspace = true, features = ["kernel"] }
