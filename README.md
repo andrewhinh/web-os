@@ -27,16 +27,28 @@ act push --bind                                  # test CI
 
 ### Kernel
 
-- [x] add dual stream for pipes (kernel-space)
-- [ ] add [COW mappings](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
-- [ ] add [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
-- [ ] add [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
-- [ ] add cooperative, event-based scheduler for trusted kernel tasks
+- [x] dual stream for pipes (kernel-space)
+- [ ] [COW mappings](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
+- [ ] [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
+- [ ] IPC: shared memory + semaphores
+- [ ] [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
+- [ ] proc control: signals + waitpid opts + interval timers
+- [ ] tty/job control: pgrp + sessions + controlling TTY + fg/bg
+- [ ] adv I/O: nonblock + poll/select
+- [ ] fcntl: F_GETFL/F_SETFL + FD_CLOEXEC
+- [ ] file locks: fcntl F_SETLK/F_GETLK
+- [ ] raw block device file: user fsck reads disk
+- [ ] fs names/attrs: rename + symlinks + permissions + umask
+- [ ] fs durability: fsync + timestamps
+- [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
+- [ ] sockets: AF_UNIX
+- [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
+- [ ] cooperative, event-based scheduler for trusted kernel tasks
   - [blog_os](https://os.phil-opp.com/async-await/)
   - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)
   - [event-based concurrency](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-events.pdf)
-- [ ] add [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) and replace PLIC with [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
-- [ ] add a [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
+- [ ] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) + [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
+- [ ] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
 
 ### App
 
@@ -44,11 +56,11 @@ act push --bind                                  # test CI
 
 ### User-Space
 
-- [ ] add [zip/unzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-utilities#wzip-and-wunzip) and [pzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-pzip)
-- [ ] add [reverse](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-reverse)
-- [ ] add [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
-- [ ] add [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
-- [ ] add [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
+- [ ] [zip/unzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-utilities#wzip-and-wunzip) and [pzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-pzip)
+- [ ] [reverse](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-reverse)
+- [ ] [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
+- [ ] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
+- [ ] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
 
 ## Credit
 
