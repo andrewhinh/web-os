@@ -2,10 +2,10 @@
 
 use kernel::mmap::{MAP_ANON, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
 use ulib::{
-    eprint, eprintln,
+    eprintln,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    print, println, sys,
+    println, sys,
 };
 
 const PGSIZE: usize = 4096;

@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 
-use ulib::{eprint, eprintln, print, println};
+use ulib::{eprintln, println};
 use ulib::{
     process::{Command, Stdio},
     sys,

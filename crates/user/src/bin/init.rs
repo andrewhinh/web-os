@@ -3,7 +3,7 @@ extern crate alloc;
 use ulib::{
     fs::{self, File, OpenOptions},
     path::Path,
-    print, println,
+    println,
     process::Command,
     stdio,
     sys::{self, Major},

@@ -6,7 +6,7 @@ use alloc::{
 };
 
 use ulib::{
-    env, eprint, eprintln,
+    env, eprintln,
     fs::{File, OpenOptions},
     io::{BufRead, BufReader},
     path::Path,

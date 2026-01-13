@@ -176,10 +176,10 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($fmt:expr) => {
-        print!(concat!($fmt, "\n"))
+        $crate::print!(concat!($fmt, "\n"))
     };
     ($fmt:expr, $($arg:tt)*) => {
-        print!(concat!($fmt, "\n"), $($arg)*)
+        $crate::print!(concat!($fmt, "\n"), $($arg)*)
     };
 }
 
@@ -193,10 +193,10 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($fmt:expr) => {
-        eprint!(concat!($fmt, "\n"))
+        $crate::eprint!(concat!($fmt, "\n"))
     };
     ($fmt:expr, $($arg:tt)*) => {
-        eprint!(concat!($fmt, "\n"), $($arg)*)
+        $crate::eprint!(concat!($fmt, "\n"), $($arg)*)
     };
 }
 

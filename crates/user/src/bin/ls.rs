@@ -2,10 +2,10 @@
 use alloc::format;
 
 use ulib::{
-    ExitCode, env, eprint, eprintln,
+    ExitCode, env, eprintln,
     fs::{self, File},
     path::Path,
-    print, println, sys,
+    println, sys,
 };
 extern crate alloc;
 

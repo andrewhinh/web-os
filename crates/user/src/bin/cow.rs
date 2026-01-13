@@ -1,6 +1,6 @@
 #![no_std]
 
-use ulib::{eprint, eprintln, print, println, sys};
+use ulib::{eprintln, println, sys};
 
 const PGSIZE: usize = 4096;
 const PAGES: usize = 256;

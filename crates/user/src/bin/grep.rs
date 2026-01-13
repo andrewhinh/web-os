@@ -3,7 +3,7 @@ extern crate alloc;
 
 use alloc::string::String;
 
-use ulib::{env, fs::File, io::Read, print, println, stdio::stdin, sys};
+use ulib::{env, fs::File, io::Read, println, stdio::stdin, sys};
 
 fn main() {
     let args = env::args();
