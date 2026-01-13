@@ -239,6 +239,23 @@ impl File {
         }
         Ok(0)
     }
+
+    pub fn is_readable(&self) -> bool {
+        self.readable
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    pub fn inode(&self) -> Option<Inode> {
+        match self.f.as_ref()?.as_ref() {
+            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip }) => {
+                Some(ip.clone())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]

@@ -6,7 +6,7 @@ use crate::{
     error::{Error::*, Result},
     fs::{IData, Path},
     log::LOG,
-    memlayout::STACK_PAGE_NUM,
+    memlayout::{STACK_PAGE_NUM, TRAPFRAME},
     param::MAXARG,
     proc::Cpus,
     riscv::{PGSIZE, pgroundup, pteflags},
@@ -225,11 +225,16 @@ pub fn exec(
         }
 
         // Commit to the user image.
-        let olduvm = proc_data.uvm.replace(uvm.take().unwrap());
+        let mut olduvm = proc_data.uvm.replace(uvm.take().unwrap());
         proc_data.sz = sz;
         tf.epc = elf.e_entry; // initial program counter = main
         tf.sp = sp.into_usize(); // initial stack pointer
-        olduvm.unwrap().proc_uvmfree(oldsz);
+        if let Some(mut olduvm) = olduvm.take() {
+            // must unmap mmap leaf PTEs before freewalk
+            proc_data.munmap_all(&mut olduvm);
+            proc_data.mmap_base = TRAPFRAME;
+            olduvm.proc_uvmfree(oldsz);
+        }
 
         Ok(argc) // this ends up in a0, the first argument to main(argc, args:
         // &[&str])

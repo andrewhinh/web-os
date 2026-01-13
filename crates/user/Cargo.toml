@@ -109,6 +109,11 @@ name = "_cow"
 path = "src/bin/cow.rs"
 test = false
 
+[[bin]]
+name = "_mmapdemo"
+path = "src/bin/mmapdemo.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

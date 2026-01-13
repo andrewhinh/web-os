@@ -15,14 +15,16 @@ use crate::file::File;
 use crate::fs::{self, Inode};
 use crate::log::LOG;
 use crate::memlayout::{STACK_PAGE_NUM, TRAMPOLINE, TRAPFRAME, kstack};
+use crate::mmap::{MAP_ANON, MAP_PRIVATE, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::param::*;
+use crate::riscv::registers::scause::Exception;
 use crate::riscv::{pteflags::*, *};
 use crate::spinlock::{Mutex, MutexGuard};
 use crate::swtch::swtch;
 use crate::sync::{LazyLock, OnceLock};
 use crate::trampoline::trampoline;
 use crate::trap::usertrap_ret;
-use crate::vm::{Addr, KVAddr, KVM, PAddr, PageAllocator, UVAddr, Uvm, VirtAddr};
+use crate::vm::{Addr, KVAddr, KVM, PAddr, Page, PageAllocator, UVAddr, Uvm, VirtAddr};
 use crate::{array, println};
 
 pub static CPUS: Cpus = Cpus::new();
@@ -284,9 +286,62 @@ pub struct ProcData {
     pub name: String,                      // Process name (debugging)
     pub ofile: [Option<File>; NOFILE],     // Open files
     pub cwd: Option<Inode>,                // Current directory
+    pub mmap_base: usize,                  // top-down allocator, starts at TRAPFRAME
+    pub vmas: Vec<Vma>,
 }
 unsafe impl Sync for ProcData {}
 unsafe impl Send for ProcData {}
+
+#[derive(Clone, Debug)]
+
+pub struct Vma {
+    pub start: UVAddr,
+    pub len: usize,   // requested len (bytes)
+    pub prot: usize,  // PROT_*
+    pub flags: usize, // MAP_*
+    pub file: Option<File>,
+    pub file_off: usize,
+}
+
+impl Vma {
+    fn end_req(&self) -> UVAddr {
+        self.start + self.len
+    }
+
+    fn len_pg(&self) -> usize {
+        pgroundup(self.len)
+    }
+
+    fn end_pg(&self) -> UVAddr {
+        self.start + self.len_pg()
+    }
+
+    fn contains_pg(&self, va: UVAddr) -> bool {
+        va >= self.start && va < self.end_pg()
+    }
+
+    fn perm(&self) -> usize {
+        let mut perm = PTE_U;
+        if (self.prot & PROT_READ) != 0 {
+            perm |= PTE_R;
+        }
+        if (self.prot & PROT_WRITE) != 0 {
+            perm |= PTE_W;
+        }
+        if (self.prot & PROT_EXEC) != 0 {
+            perm |= PTE_X;
+        }
+        perm
+    }
+
+    fn is_shared(&self) -> bool {
+        (self.flags & MAP_SHARED) != 0
+    }
+
+    fn is_anon(&self) -> bool {
+        (self.flags & MAP_ANON) != 0
+    }
+}
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ProcState {
@@ -475,10 +530,13 @@ impl Proc {
     fn free(&self, mut guard: MutexGuard<'_, ProcInner>) {
         let data = self.data_mut();
         data.trapframe.take();
-        if let Some(uvm) = data.uvm.take() {
+        if let Some(mut uvm) = data.uvm.take() {
+            data.munmap_all(&mut uvm);
             uvm.proc_uvmfree(data.sz);
         }
         data.sz = 0;
+        data.vmas.clear();
+        data.mmap_base = TRAPFRAME;
         guard.pid = PId(0);
         data.name.clear();
         guard.chan = 0;
@@ -668,6 +726,8 @@ impl ProcData {
             name: String::new(),
             ofile: array![None; NOFILE],
             cwd: Default::default(),
+            mmap_base: TRAPFRAME,
+            vmas: Vec::new(),
         }
     }
 }
@@ -675,6 +735,31 @@ impl ProcData {
 impl Default for ProcData {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ProcData {
+    fn alloc_mmap_va(&mut self, len: usize) -> Result<UVAddr> {
+        let len_pg = pgroundup(len);
+        if len_pg == 0 {
+            return Err(InvalidArgument);
+        }
+        if self.mmap_base < len_pg {
+            return Err(NoBufferSpace);
+        }
+        let base = pgrounddown(self.mmap_base - len_pg);
+        if base < pgroundup(self.sz) {
+            return Err(NoBufferSpace);
+        }
+        self.mmap_base = base;
+        Ok(UVAddr::from(base))
+    }
+
+    pub(crate) fn munmap_all(&mut self, uvm: &mut Uvm) {
+        let vmas = core::mem::take(&mut self.vmas);
+        for v in vmas {
+            let _ = munmap_vma_range(uvm, &v, v.start, v.len_pg());
+        }
     }
 }
 
@@ -905,6 +990,34 @@ pub fn fork() -> Result<usize> {
 
     c_data.name.push_str(&p_data.name);
 
+    // copy mmap metadata + any already-mapped pages
+    c_data.mmap_base = p_data.mmap_base;
+    c_data.vmas = p_data.vmas.clone();
+    for v in c_data.vmas.iter() {
+        let mut va = v.start;
+        while va < v.end_pg() {
+            if let Some(pte) = p_uvm.walk(va, false)
+                && pte.is_v()
+                && pte.is_leaf()
+                && pte.is_u()
+            {
+                let pa = pte.to_pa();
+                let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
+                unsafe {
+                    *mem = (*(pa.into_usize() as *mut Page)).clone();
+                }
+                if let Err(err) = c_uvm.mappages(va, (mem as usize).into(), PGSIZE, pte.flags()) {
+                    unsafe {
+                        let _pg = Box::from_raw(mem);
+                    }
+                    return Err(err);
+                }
+                crate::kalloc::page_ref_init(mem as usize);
+            }
+            va += PGSIZE;
+        }
+    }
+
     let pid = c_guard.pid;
 
     let c_inner = Mutex::unlock(c_guard);
@@ -987,10 +1100,272 @@ pub fn grow(n: isize) -> Result<()> {
     let uvm = data.uvm.as_mut().unwrap();
 
     match n.cmp(&0) {
-        Ordering::Greater => sz = uvm.alloc(sz, sz + n as usize, PTE_W)?,
+        Ordering::Greater => {
+            let newsz = sz + n as usize;
+            if newsz >= data.mmap_base {
+                return Err(NoBufferSpace);
+            }
+            sz = uvm.alloc(sz, newsz, PTE_W)?;
+        }
         Ordering::Less => sz = uvm.dealloc(sz, (sz as isize + n) as usize),
         _ => (),
     }
     data.sz = sz;
     Ok(())
+}
+
+// mmap syscalls
+
+pub fn mmap(
+    addr: usize,
+    len: usize,
+    prot: usize,
+    flags: usize,
+    fd: usize,
+    offset: usize,
+) -> Result<usize> {
+    if addr != 0 {
+        return Err(InvalidArgument);
+    }
+
+    if len == 0 {
+        return Err(InvalidArgument);
+    }
+
+    if !offset.is_multiple_of(PGSIZE) {
+        return Err(InvalidArgument);
+    }
+
+    let shared = (flags & MAP_SHARED) != 0;
+    let private = (flags & MAP_PRIVATE) != 0;
+    if shared == private {
+        return Err(InvalidArgument);
+    }
+
+    let p = Cpus::myproc().unwrap();
+    let data = p.data_mut();
+
+    let file = if (flags & MAP_ANON) != 0 {
+        None
+    } else {
+        let f = data
+            .ofile
+            .get(fd)
+            .ok_or(FileDescriptorTooLarge)?
+            .as_ref()
+            .ok_or(BadFileDescriptor)?
+            .clone();
+
+        // basic checks
+        if (prot & PROT_READ) != 0 && !f.is_readable() {
+            return Err(PermissionDenied);
+        }
+
+        if shared && (prot & PROT_WRITE) != 0 && !f.is_writable() {
+            return Err(PermissionDenied);
+        }
+
+        if f.inode().is_none() {
+            return Err(InvalidArgument);
+        }
+
+        Some(f)
+    };
+
+    let start = data.alloc_mmap_va(len)?;
+
+    data.vmas.push(Vma {
+        start,
+        len,
+        prot,
+        flags,
+        file,
+        file_off: offset,
+    });
+
+    Ok(start.into_usize())
+}
+
+pub fn munmap(addr: usize, len: usize) -> Result<()> {
+    if !addr.is_multiple_of(PGSIZE) || len == 0 {
+        return Err(InvalidArgument);
+    }
+
+    let p = Cpus::myproc().unwrap();
+    let data = p.data_mut();
+    let uvm = data.uvm.as_mut().unwrap();
+
+    let start: UVAddr = addr.into();
+    let len_pg = pgroundup(len);
+    let end = start + len_pg;
+
+    // may touch multiple vmas
+    let mut i = 0;
+    while i < data.vmas.len() {
+        let v = data.vmas[i].clone();
+        let v_start = v.start;
+        let v_end = v.end_pg();
+
+        let ov_start = if start > v_start { start } else { v_start };
+        let ov_end = if end < v_end { end } else { v_end };
+
+        if ov_start >= ov_end {
+            i += 1;
+            continue;
+        }
+
+        // unmap pages + writeback
+        munmap_vma_range(uvm, &v, ov_start, ov_end - ov_start)?;
+
+        // adjust vma
+        let unmap_a = ov_start;
+        let unmap_b = ov_end;
+
+        if unmap_a == v_start && unmap_b == v_end {
+            data.vmas.remove(i);
+            continue;
+        } else if unmap_a == v_start {
+            let delta = unmap_b - v_start;
+            data.vmas[i].start = unmap_b;
+            data.vmas[i].file_off += delta;
+            data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
+        } else if unmap_b == v_end {
+            let delta = v_end - unmap_a;
+            data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
+        } else {
+            // split
+            let left_len = unmap_a - v_start;
+            let right_off = unmap_b - v_start;
+            let right_len = v_end - unmap_b;
+
+            let mut right = data.vmas[i].clone();
+            right.start = unmap_b;
+            right.file_off += right_off;
+            right.len = core::cmp::min(right.len.saturating_sub(right_off), right_len);
+
+            data.vmas[i].len = core::cmp::min(data.vmas[i].len, left_len);
+            data.vmas.insert(i + 1, right);
+            i += 1;
+        }
+
+        i += 1;
+    }
+
+    Ok(())
+}
+
+fn munmap_vma_range(uvm: &mut Uvm, v: &Vma, start: UVAddr, len_pg: usize) -> Result<()> {
+    let mut a = start;
+    let end = start + len_pg;
+
+    while a < end {
+        // only touch mapped pages
+        if let Some(pte) = uvm.walk(a, false)
+            && pte.is_v()
+            && pte.is_leaf()
+        {
+            // writeback for shared, file-backed
+            if v.is_shared()
+                && !v.is_anon()
+                && let Some(f) = v.file.as_ref()
+                && let Some(ip) = f.inode()
+            {
+                let page_off = a - v.start;
+                let write_start = core::cmp::max(a.into_usize(), v.start.into_usize());
+                let write_end = core::cmp::min(a.into_usize() + PGSIZE, v.end_req().into_usize());
+
+                if write_end > write_start {
+                    let n = write_end - write_start;
+                    let file_off = v.file_off + page_off + (write_start - a.into_usize());
+
+                    if file_off > u32::MAX as usize {
+                        return Err(InvalidArgument);
+                    }
+
+                    LOG.begin_op();
+                    {
+                        let mut guard = ip.lock();
+                        let pa = pte.to_pa().into_usize() + (write_start - a.into_usize());
+                        let _ = guard.write(VirtAddr::Kernel(pa), file_off as u32, n)?;
+                    }
+                    LOG.end_op();
+                }
+            }
+
+            uvm.unmap(a, 1, true);
+        }
+
+        a += PGSIZE;
+    }
+
+    Ok(())
+}
+
+pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()> {
+    let p = Cpus::myproc().unwrap();
+    let data = p.data_mut();
+
+    let mut va: UVAddr = fault_addr.into();
+    va.rounddown();
+
+    let vmas = data.vmas.clone();
+    let idx = vmas
+        .iter()
+        .position(|v| v.contains_pg(va))
+        .ok_or(BadVirtAddr)?;
+    let v = vmas[idx].clone();
+
+    let mut uvm = data.uvm.take().unwrap();
+
+    let res = (|| -> Result<()> {
+        // permission check based on fault type
+        match cause {
+            Exception::LoadPageFault if (v.prot & PROT_READ) == 0 => return Err(PermissionDenied),
+            Exception::StorePageFault if (v.prot & PROT_WRITE) == 0 => {
+                return Err(PermissionDenied);
+            }
+            Exception::InstructionPageFault if (v.prot & PROT_EXEC) == 0 => {
+                return Err(PermissionDenied);
+            }
+            _ => {}
+        }
+
+        // already mapped?
+        if let Some(pte) = uvm.walk(va, false)
+            && pte.is_v()
+            && pte.is_leaf()
+            && pte.is_u()
+        {
+            return Err(BadVirtAddr);
+        }
+
+        let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
+
+        // file-backed fill
+        if !v.is_anon()
+            && let Some(f) = v.file.as_ref()
+            && let Some(ip) = f.inode()
+        {
+            let page_off = va - v.start;
+            let file_off = v.file_off + page_off;
+
+            if file_off <= u32::MAX as usize {
+                let mut guard = ip.lock();
+                let _ = guard.read(VirtAddr::Kernel(mem as usize), file_off as u32, PGSIZE)?;
+            }
+        }
+
+        if let Err(err) = uvm.mappages(va, (mem as usize).into(), PGSIZE, v.perm()) {
+            unsafe {
+                let _pg = Box::from_raw(mem);
+            }
+            return Err(err);
+        }
+        crate::kalloc::page_ref_init(mem as usize);
+
+        Ok(())
+    })();
+
+    data.uvm = Some(uvm);
+    res
 }

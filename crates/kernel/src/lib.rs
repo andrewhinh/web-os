@@ -69,6 +69,7 @@ pub mod kalloc;
 pub mod list;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod log;
+pub mod mmap;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod pipe;
 #[cfg(all(target_os = "none", feature = "kernel"))]

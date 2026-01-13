@@ -55,6 +55,8 @@ pub enum SysCalls {
     Fcntl = 23,
     Nonblock = 24,
     Freepages = 25,
+    MMap = 26,
+    MunMap = 27,
     Invalid = 0,
 }
 
@@ -121,6 +123,11 @@ impl SysCalls {
         (Fn::I(Self::fcntl), "(fd: usize, cmd: FcntlCmd)"), //
         (Fn::I(Self::nonblock), "(fd: usize, on: usize)"), //
         (Fn::I(Self::freepages), "()"),      //
+        (
+            Fn::I(Self::mmap),
+            "(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, offset: usize)",
+        ), //
+        (Fn::U(Self::munmap), "(addr: usize, len: usize)"), //
     ];
 
     pub fn invalid() -> ! {
@@ -390,6 +397,34 @@ impl SysCalls {
             let n = argraw(0) as isize;
             let addr = p.data().sz;
             grow(n).and(Ok(addr))
+        }
+    }
+
+    pub fn mmap() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let addr = argraw(0);
+            let len = argraw(1);
+            let prot = argraw(2);
+            let flags = argraw(3);
+            let fd = argraw(4);
+            let offset = argraw(5);
+            mmap(addr, len, prot, flags, fd, offset)
+        }
+    }
+
+    pub fn munmap() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let addr = argraw(0);
+            let len = argraw(1);
+            munmap(addr, len)
         }
     }
 
@@ -776,6 +811,8 @@ impl SysCalls {
             23 => Self::Fcntl,
             24 => Self::Nonblock,
             25 => Self::Freepages,
+            26 => Self::MMap,
+            27 => Self::MunMap,
             _ => Self::Invalid,
         }
     }

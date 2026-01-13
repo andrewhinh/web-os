@@ -29,7 +29,7 @@ act push --bind                                  # test CI
 
 - [x] dual stream for pipes (kernel-space)
 - [x] [COW mappings](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
-- [ ] [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
+- [x] [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [ ] IPC: shared memory + semaphores
 - [ ] [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
 - [ ] proc control: signals + waitpid opts + interval timers

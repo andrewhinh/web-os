@@ -80,15 +80,29 @@ pub extern "C" fn usertrap() -> ! {
             syscall();
         }
         Trap::Exception(Exception::StorePageFault) => {
-            // cow
-            let va = UVAddr::from(stval::read());
-            if va.into_usize() >= data.sz {
-                p.inner.lock().killed = true;
-            } else {
+            let fault = stval::read();
+            let va = UVAddr::from(fault);
+
+            // cow for regular user mem
+            if va.into_usize() < data.sz {
                 let uvm = data.uvm.as_mut().unwrap();
                 if uvm.resolve_cow(va).is_err() {
                     p.inner.lock().killed = true;
                 }
+            } else {
+                // lazy mmap
+                intr_on();
+                if proc::handle_user_page_fault(fault, Exception::StorePageFault).is_err() {
+                    p.inner.lock().killed = true;
+                }
+            }
+        }
+        Trap::Exception(e @ (Exception::InstructionPageFault | Exception::LoadPageFault)) => {
+            // lazy mmap
+            intr_on();
+            let fault = stval::read();
+            if proc::handle_user_page_fault(fault, e).is_err() {
+                p.inner.lock().killed = true;
             }
         }
         Trap::Interrupt(intr)
