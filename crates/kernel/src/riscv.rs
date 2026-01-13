@@ -658,4 +658,5 @@ pub mod pteflags {
     pub const PTE_W: usize = 1 << 2;
     pub const PTE_X: usize = 1 << 3;
     pub const PTE_U: usize = 1 << 4; // user can access
+    pub const PTE_COW: usize = 1 << 8; // copy-on-write mapping
 }

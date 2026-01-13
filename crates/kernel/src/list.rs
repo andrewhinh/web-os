@@ -19,6 +19,18 @@ impl List {
         ptr::eq(self.next, self)
     }
 
+    pub fn len(&self) -> usize {
+        let mut n = 0usize;
+        unsafe {
+            let mut p = self.next;
+            while !ptr::eq(p, self) {
+                n += 1;
+                p = (*p).next;
+            }
+        }
+        n
+    }
+
     pub unsafe fn remove(e: *mut List) {
         unsafe {
             (*(*e).prev).next = (*e).next;

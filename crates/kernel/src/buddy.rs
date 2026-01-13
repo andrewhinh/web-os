@@ -176,6 +176,18 @@ impl BuddyAllocator {
         }
     }
 
+    pub fn free_bytes(&self) -> usize {
+        let Some(sizes_ptr) = self.sizes else {
+            return 0;
+        };
+        let sizes = unsafe { sizes_ptr.as_ref() };
+        let mut total = 0usize;
+        for (k, szinfo) in sizes.iter().enumerate() {
+            total += szinfo.free.len() * Self::blk_size(k);
+        }
+        total
+    }
+
     // Find the size of the block that p points to.
     fn size(&self, p: usize) -> usize {
         if let Some(sizes_ptr) = self.sizes {

@@ -606,8 +606,20 @@ pub fn user_init(initcode: &'static [u8]) {
 
         sz = uvm.alloc(sz, end_vaddr, flags2perm(phdr.p_flags)).unwrap();
 
-        uvm.copyout(va, &initcode[phdr.p_offset..(phdr.p_offset + phdr.p_fsize)])
-            .unwrap();
+        // text segments may be mapped !PTE_W, so
+        // load bytes by writing to the physical pages directly
+        let src = initcode
+            .get(phdr.p_offset..(phdr.p_offset + phdr.p_fsize))
+            .expect("initcode: segment range");
+        let mut i = 0usize;
+        while i < phdr.p_fsize {
+            let pa = uvm.walkaddr(va + i).unwrap();
+            let n = core::cmp::min(PGSIZE, phdr.p_fsize - i);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src.as_ptr().add(i), pa.into_usize() as *mut u8, n);
+            }
+            i += PGSIZE;
+        }
         off += size_of::<ProgHdr>();
     }
     // Allocate two pages at the next page boundary.

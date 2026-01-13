@@ -7,6 +7,7 @@ use core::ops::{Add, AddAssign, Deref, DerefMut, Index, IndexMut, Sub, SubAssign
 
 use crate::defs::AsBytes;
 use crate::error::{Error::*, Result};
+use crate::kalloc;
 use crate::memlayout::{
     KERNBASE, PHYSTOP, PLIC, SIFIVE_TEST, STACK_PAGE_NUM, TRAMPOLINE, TRAPFRAME, UART0, VIRTIO0,
 };
@@ -447,8 +448,11 @@ impl Uvm {
                 Some(pte) => {
                     if do_free {
                         let pa = pte.to_pa();
-                        unsafe {
-                            let _pg = Box::from_raw(pa.into_usize() as *mut Page);
+                        let new = kalloc::page_ref_dec(pa.into_usize());
+                        if new == 0 {
+                            unsafe {
+                                let _pg = Box::from_raw(pa.into_usize() as *mut Page);
+                            }
                         }
                     }
                     *pte = PageTableEntry(0);
@@ -494,6 +498,7 @@ impl Uvm {
                 self.dealloc(a, oldsz);
                 return Err(err);
             }
+            kalloc::page_ref_init(mem as usize);
         }
         Ok(newsz)
     }
@@ -525,41 +530,85 @@ impl Uvm {
 
     // Given a parent process's page table, copy
     // its memory into a child's page table.
-    // Copies both the page table and physical memory.
+    // Copy-on-write: share physical pages, map them read-only + PTE_COW
+    // for originally-writable pages.
     // returns Result<()>
     pub fn copy(&mut self, new: &mut Self, size: usize) -> Result<()> {
         let mut va = UVAddr::from(0);
         while va.into_usize() < size {
-            match self.walk(va, false) {
+            let (pa, mut flags) = match self.walk(va, false) {
                 Some(pte) => {
                     if !pte.is_v() {
                         panic!("uvmcopy: page not present");
                     }
-                    let pa = pte.to_pa();
-                    let flags = pte.flags();
-                    let mem = if let Some(mem) = unsafe { Page::try_new_zeroed() } {
-                        mem
-                    } else {
-                        new.unmap(0.into(), va.into_usize() / PGSIZE, true);
-                        return Err(OutOfMemory);
-                    };
-                    unsafe {
-                        *mem = (*(pa.into_usize() as *mut Page)).clone();
-                    }
-                    if let Err(err) = new.mappages(va, (mem as usize).into(), PGSIZE, flags) {
-                        unsafe {
-                            let _pg = Box::from_raw(mem);
-                        }
-                        new.unmap(0.into(), va.into_usize() / PGSIZE, true);
-                        return Err(err);
-                    }
+                    (pte.to_pa(), pte.flags())
                 }
                 None => {
                     panic!("uvmcopy: pte should exist");
                 }
+            };
+            if (flags & PTE_W) != 0 {
+                flags = (flags & !PTE_W) | PTE_COW;
+                let pte = self.walk(va, false).unwrap();
+                pte.set(pa.into_usize(), flags);
             }
+            if let Err(err) = new.mappages(va, pa, PGSIZE, flags) {
+                new.unmap(0.into(), va.into_usize() / PGSIZE, true);
+                return Err(err);
+            }
+            kalloc::page_ref_inc(pa.into_usize());
             va += PGSIZE;
         }
+        unsafe { sfence_vma() }; // parent may have had writable TLB entries
+        Ok(())
+    }
+
+    // make PTE writable/not COW
+    pub fn resolve_cow(&mut self, mut va: UVAddr) -> Result<()> {
+        va.rounddown();
+        let (pa, flags) = {
+            let pte = self.page_table.walk(va, false).ok_or(BadVirtAddr)?;
+            if !pte.is_v() || !pte.is_u() || !pte.is_leaf() {
+                return Err(BadVirtAddr);
+            }
+            let flags = pte.flags();
+            if (flags & PTE_COW) == 0 || (flags & PTE_W) != 0 {
+                return Err(BadVirtAddr);
+            }
+            (pte.to_pa().into_usize(), flags)
+        };
+
+        if kalloc::page_ref_get(pa) == 1 {
+            let pte = self.page_table.walk(va, false).ok_or(BadVirtAddr)?;
+            let new_flags = (flags | PTE_W) & !PTE_COW;
+            pte.set(pa, new_flags);
+            unsafe { sfence_vma() };
+            return Ok(());
+        }
+
+        // allocate and copy
+        let new_mem = match Box::<Page>::try_new_zeroed() {
+            Ok(mem) => Box::into_raw(unsafe { mem.assume_init() }),
+            Err(_) => return Err(OutOfMemory),
+        };
+        let new_pa = new_mem as usize;
+        unsafe {
+            *new_mem = (*(pa as *const Page)).clone();
+        }
+        kalloc::page_ref_init(new_pa);
+
+        // swap mapping, then drop old ref
+        let pte = self.page_table.walk(va, false).ok_or(BadVirtAddr)?;
+        let new_flags = (flags | PTE_W) & !PTE_COW;
+        pte.set(new_pa, new_flags);
+        unsafe { sfence_vma() };
+        let new = kalloc::page_ref_dec(pa);
+        if new == 0 {
+            unsafe {
+                let _pg = Box::from_raw(pa as *mut Page);
+            }
+        }
+
         Ok(())
     }
 
@@ -585,6 +634,28 @@ impl Uvm {
         while len > 0 {
             let mut va0 = dstva;
             va0.rounddown();
+            let mut need_cow = false;
+            {
+                let pte = self.page_table.walk(va0, false).ok_or(BadVirtAddr)?;
+                if !pte.is_v() || !pte.is_u() || !pte.is_leaf() {
+                    return Err(BadVirtAddr);
+                }
+                let flags = pte.flags();
+                if (flags & PTE_W) == 0 {
+                    if (flags & PTE_COW) != 0 {
+                        need_cow = true;
+                    } else {
+                        return Err(BadVirtAddr);
+                    }
+                }
+            }
+            if need_cow {
+                self.resolve_cow(va0)?;
+            }
+            let pte = self.page_table.walk(va0, false).ok_or(BadVirtAddr)?;
+            if (pte.flags() & PTE_W) == 0 {
+                return Err(BadVirtAddr);
+            }
             let pa0 = self.page_table.walkaddr(va0)?;
             let n = core::cmp::min(PGSIZE - (dstva - va0), len);
             let dst = unsafe {

@@ -12,7 +12,7 @@ use crate::{
     trampoline::trampoline,
     uart::UART,
     virtio_disk::DISK,
-    vm::Addr,
+    vm::{Addr, UVAddr},
 };
 
 unsafe extern "C" {
@@ -78,6 +78,18 @@ pub extern "C" fn usertrap() -> ! {
             intr_on();
 
             syscall();
+        }
+        Trap::Exception(Exception::StorePageFault) => {
+            // cow
+            let va = UVAddr::from(stval::read());
+            if va.into_usize() >= data.sz {
+                p.inner.lock().killed = true;
+            } else {
+                let uvm = data.uvm.as_mut().unwrap();
+                if uvm.resolve_cow(va).is_err() {
+                    p.inner.lock().killed = true;
+                }
+            }
         }
         Trap::Interrupt(intr)
             if {

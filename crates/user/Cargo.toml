@@ -104,6 +104,11 @@ name = "_pdual_child"
 path = "src/bin/pdual_child.rs"
 test = false
 
+[[bin]]
+name = "_cow"
+path = "src/bin/cow.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

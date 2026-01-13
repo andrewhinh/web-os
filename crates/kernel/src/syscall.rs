@@ -54,6 +54,7 @@ pub enum SysCalls {
     Dup2 = 22,
     Fcntl = 23,
     Nonblock = 24,
+    Freepages = 25,
     Invalid = 0,
 }
 
@@ -119,6 +120,7 @@ impl SysCalls {
         (Fn::I(Self::dup2), "(src: usize, dst: usize)"), //
         (Fn::I(Self::fcntl), "(fd: usize, cmd: FcntlCmd)"), //
         (Fn::I(Self::nonblock), "(fd: usize, on: usize)"), //
+        (Fn::I(Self::freepages), "()"),      //
     ];
 
     pub fn invalid() -> ! {
@@ -431,6 +433,15 @@ impl SysCalls {
         #[cfg(all(target_os = "none", feature = "kernel"))]
         {
             Ok(*TICKS.lock())
+        }
+    }
+
+    pub fn freepages() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            Ok(crate::kalloc::free_pages())
         }
     }
 }
@@ -764,6 +775,7 @@ impl SysCalls {
             22 => Self::Dup2,
             23 => Self::Fcntl,
             24 => Self::Nonblock,
+            25 => Self::Freepages,
             _ => Self::Invalid,
         }
     }
