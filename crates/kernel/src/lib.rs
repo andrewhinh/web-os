@@ -78,12 +78,16 @@ pub mod mmap;
 pub mod pipe;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod riscv;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod runq;
 pub mod stat;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod swtch;
 #[cfg(target_os = "none")]
 pub mod sync;
 pub mod syscall;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod task;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod test;
 #[cfg(all(target_os = "none", feature = "kernel"))]

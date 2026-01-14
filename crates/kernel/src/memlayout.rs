@@ -25,10 +25,12 @@ pub const SIFIVE_TEST: usize = 0x10_0000;
 // qemu puts UART registers here in physical memory.
 pub const UART0: usize = 0x1000_0000;
 pub const UART0_IRQ: u32 = 10;
+pub const UART0_HART: usize = 0;
 
 // virtio mmio interface
 pub const VIRTIO0: usize = 0x1000_1000;
 pub const VIRTIO0_IRQ: u32 = 1;
+pub const VIRTIO0_HART: usize = 0;
 
 // core local interrupter (CLINT), which contains the timer
 pub const CLINT: usize = 0x2000000;

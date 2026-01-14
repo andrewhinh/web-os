@@ -3,7 +3,6 @@ use core::{num::Wrapping, ptr, sync::atomic::Ordering};
 use Register::*;
 
 use crate::{
-    console::CONS,
     memlayout::UART0,
     printf::PR,
     proc::{self, Cpus},
@@ -170,11 +169,110 @@ impl Mutex<Uart> {
     pub fn intr(&self) {
         // read and process incoming characters
         while let Some(c) = self.getc() {
-            CONS.intr(c);
+            async_tasks::push_rx(c);
         }
 
         // send buffered characters.
         self.lock().start();
+    }
+}
+
+pub fn spawn_tasks() {
+    async_tasks::spawn_tasks();
+}
+
+mod async_tasks {
+    use core::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use crate::{
+        console::CONS,
+        memlayout::UART0_HART,
+        spinlock::Mutex,
+        task::{Task, spawn_on},
+    };
+
+    const RXQ_SIZE: usize = 512;
+
+    #[derive(Debug)]
+    struct Ring<const N: usize> {
+        buf: [u8; N],
+        head: usize,
+        tail: usize,
+        len: usize,
+    }
+
+    impl<const N: usize> Ring<N> {
+        const fn new() -> Self {
+            Self {
+                buf: [0; N],
+                head: 0,
+                tail: 0,
+                len: 0,
+            }
+        }
+
+        fn push(&mut self, v: u8) -> bool {
+            if self.len == N {
+                return false;
+            }
+            self.buf[self.tail] = v;
+            self.tail = (self.tail + 1) % N;
+            self.len += 1;
+            true
+        }
+
+        fn pop(&mut self) -> Option<u8> {
+            if self.len == 0 {
+                return None;
+            }
+            let v = self.buf[self.head];
+            self.head = (self.head + 1) % N;
+            self.len -= 1;
+            Some(v)
+        }
+    }
+
+    static RXQ: Mutex<Ring<RXQ_SIZE>> = Mutex::new(Ring::new(), "uartrxq");
+    static RX_WAKER: Mutex<Option<Waker>> = Mutex::new(None, "uartrxw");
+
+    pub(super) fn push_rx(b: u8) {
+        if RXQ.lock().push(b)
+            && let Some(w) = RX_WAKER.lock().as_ref()
+        {
+            w.wake_by_ref();
+        }
+    }
+
+    struct NextRx;
+    impl Future for NextRx {
+        type Output = u8;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<u8> {
+            if let Some(b) = RXQ.lock().pop() {
+                return Poll::Ready(b);
+            }
+            *RX_WAKER.lock() = Some(cx.waker().clone());
+            if let Some(b) = RXQ.lock().pop() {
+                Poll::Ready(b)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    pub(super) fn spawn_tasks() {
+        spawn_on(UART0_HART, Task::new(rx_task()));
+    }
+
+    async fn rx_task() {
+        loop {
+            let b = NextRx.await;
+            CONS.intr(b);
+        }
     }
 }
 

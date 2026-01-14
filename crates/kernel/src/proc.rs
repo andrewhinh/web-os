@@ -12,19 +12,21 @@ use crate::elf::{self, ElfHdr, ProgHdr};
 use crate::error::{Error::*, Result};
 use crate::exec::flags2perm;
 use crate::file::File;
-use crate::fs::{self, Inode};
+use crate::fs::{self, Inode, Path};
 use crate::log::LOG;
 use crate::memlayout::{STACK_PAGE_NUM, TRAMPOLINE, kstack, trapframe_va, user_mem_top};
 use crate::mmap::{MAP_ANON, MAP_PRIVATE, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::param::*;
 use crate::riscv::registers::scause::Exception;
 use crate::riscv::{pteflags::*, *};
+use crate::runq::{runq_is_empty, runq_pop, runq_push_cpu};
 use crate::spinlock::{Mutex, MutexGuard};
 use crate::swtch::swtch;
 use crate::sync::{LazyLock, OnceLock};
+use crate::task::{ready_is_empty_cpu, run_ready_tasks_cpu};
 use crate::trampoline::trampoline;
 use crate::trap::usertrap_ret;
-use crate::vm::{Addr, KVAddr, KVM, PAddr, Page, PageAllocator, UVAddr, Uvm, VirtAddr};
+use crate::vm::{Addr, KVAddr, KVM, PAddr, Page, PageAllocator, Stack, UVAddr, Uvm, VirtAddr};
 use crate::{array, println};
 
 pub static CPUS: Cpus = Cpus::new();
@@ -32,6 +34,20 @@ pub static CPUS: Cpus = Cpus::new();
 #[allow(clippy::redundant_closure)]
 pub static PROCS: LazyLock<Procs> = LazyLock::new(|| Procs::new());
 pub static INITPROC: OnceLock<Arc<Proc>> = OnceLock::new();
+
+#[inline]
+fn make_runnable(idx: usize, guard: &mut ProcInner) {
+    if guard.state != ProcState::RUNNABLE {
+        guard.state = ProcState::RUNNABLE;
+        let cpu = if guard.last_cpu < NCPU {
+            guard.last_cpu
+        } else {
+            unsafe { Cpus::cpu_id() }
+        };
+        guard.last_cpu = cpu;
+        runq_push_cpu(cpu, idx);
+    }
+}
 
 #[derive(Debug)]
 
@@ -124,7 +140,7 @@ impl Cpus {
     // disable interrupts on mycpu().
     // if all `IntrLock` are dropped, interrupts may recover
     // to previous state.
-    pub fn lock_mycpu(name: &str) -> IntrLock {
+    pub fn lock_mycpu(name: &'static str) -> IntrLock {
         let old = intr_get();
         intr_off();
         unsafe { (*CPUS.mycpu()).locked(old, name) }
@@ -146,10 +162,15 @@ impl Cpu {
 
     // if all `IntrLock`'s are dropped, interrupts may recover
     // to previous state.
-    fn locked(&mut self, old: bool, _name: &str) -> IntrLock {
+    fn locked(&mut self, old: bool, name: &'static str) -> IntrLock {
         if self.noff == 0 {
             self.intena = old;
         }
+        assert!(
+            (self.noff as usize) < self.nest.len(),
+            "intrlock nest overflow"
+        );
+        self.nest[self.noff as usize] = name;
         self.noff += 1;
         IntrLock
     }
@@ -196,6 +217,12 @@ pub struct Context {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // Per-process data for the trampoline.rs trap processing code, mapped
@@ -313,6 +340,7 @@ pub struct ProcInner {
     pub killed: bool,     // if true, have been killed
     pub xstate: i32,      // Exit status to be returned to parent's wait
     pub pid: PId,         // Process ID
+    pub last_cpu: usize,  // Last CPU this process was run on
 }
 
 // These are private to the process, so lock need not be held.
@@ -443,12 +471,6 @@ impl Context {
     }
 }
 
-impl Default for Context {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Default for Procs {
     fn default() -> Self {
         Self::new()
@@ -483,7 +505,6 @@ impl Procs {
     // map it high in memory, followed by an invalid guard page.
     #[allow(static_mut_refs)]
     pub unsafe fn mapstacks(&self) {
-        use crate::vm::Stack;
         for (p, _) in self.pool.iter().enumerate() {
             let pa = unsafe { Stack::try_new_zeroed() }.unwrap() as usize;
             let va = kstack(p);
@@ -574,26 +595,34 @@ impl Proc {
     fn free(&self, mut guard: MutexGuard<'_, ProcInner>) {
         let data = self.data_mut();
         let aspace = data.aspace.as_ref().map(Arc::clone);
+        let mut writebacks = Vec::new();
 
         if let Some(aspace) = aspace {
-            let mut inner = aspace.inner.lock();
-
-            // Always unmap this proc/thread's trapframe from the user page table.
-            if let Some(ref mut uvm) = inner.uvm {
-                let _ = uvm.try_unmap(data.trapframe_va, 1, false);
-            }
-
-            // If this is the last owner of the address space, tear down mmaps before
-            // freeing.
-            if !data.is_thread
-                && Arc::strong_count(&aspace) == 1
-                && let Some(mut uvm) = inner.uvm.take()
+            let mut olduvm = None;
+            let mut oldsz = 0;
             {
-                let oldsz = inner.sz;
-                data.munmap_all(&mut uvm);
+                let mut inner = aspace.inner.lock();
+
+                // Always unmap this proc/thread's trapframe from the user page table.
+                if let Some(ref mut uvm) = inner.uvm {
+                    let _ = uvm.try_unmap(data.trapframe_va, 1, false);
+                }
+
+                // If this is the last owner of the address space, tear down mmaps before
+                // freeing.
+                if !data.is_thread
+                    && Arc::strong_count(&aspace) == 1
+                    && let Some(uvm) = inner.uvm.take()
+                {
+                    oldsz = inner.sz;
+                    inner.sz = 0;
+                    olduvm = Some(uvm);
+                }
+            }
+            if let Some(mut uvm) = olduvm {
+                writebacks = data.munmap_all(&mut uvm);
                 data.mmap_base = user_mem_top(NPROC);
                 uvm.proc_uvmfree(oldsz);
-                inner.sz = 0;
             }
         }
         data.trapframe.take();
@@ -608,6 +637,10 @@ impl Proc {
         guard.killed = false;
         guard.xstate = 0;
         guard.state = ProcState::UNUSED;
+        drop(guard);
+        for wb in writebacks {
+            let _ = wb.flush();
+        }
     }
 
     // Create a user page table with no user memory
@@ -763,7 +796,7 @@ pub fn user_init(initcode: &'static [u8]) {
     tf.sp = UVAddr::from(sz).into_usize(); // user stack pointer
 
     data.name.push_str("initcode");
-    guard.state = ProcState::RUNNABLE;
+    make_runnable(p.idx, guard);
 }
 
 impl ProcInner {
@@ -774,6 +807,7 @@ impl ProcInner {
             killed: false,
             xstate: 0,
             pid: PId(0),
+            last_cpu: 0,
         }
     }
 }
@@ -826,11 +860,13 @@ impl ProcData {
         Ok(UVAddr::from(base))
     }
 
-    pub(crate) fn munmap_all(&mut self, uvm: &mut Uvm) {
+    pub(crate) fn munmap_all(&mut self, uvm: &mut Uvm) -> Vec<Writeback> {
         let vmas = core::mem::take(&mut self.vmas);
+        let mut writebacks = Vec::new();
         for v in vmas {
-            let _ = munmap_vma_range(uvm, &v, v.start, v.len_pg());
+            let _ = munmap_vma_range(uvm, &v, v.start, v.len_pg(), &mut writebacks);
         }
+        writebacks
     }
 }
 
@@ -854,7 +890,7 @@ pub unsafe extern "C" fn fork_ret() -> ! {
         }
         fs::init(ROOTDEV);
         // register initproc here, because namei must be called after fs initialization.
-        INITPROC.get().unwrap().data_mut().cwd = Some(crate::fs::Path::new("/").namei().unwrap().1)
+        INITPROC.get().unwrap().data_mut().cwd = Some(Path::new("/").namei().unwrap().1);
     }
     unsafe { usertrap_ret() }
 }
@@ -889,21 +925,37 @@ pub fn scheduler() -> ! {
         // Avoid deadlock by ensuring that devices can interrupt.
         intr_on();
 
-        for p in PROCS.pool.iter() {
-            let mut inner = p.inner.lock();
-            if inner.state == ProcState::RUNNABLE {
-                // Switch to chosen process. It is the process's job
-                // to release its lock and then reacquire it
-                // before jumping back to us.
-                inner.state = ProcState::RUNNING;
+        let cpu = unsafe { Cpus::cpu_id() };
+        run_ready_tasks_cpu(cpu, 32);
+
+        let Some(idx) = runq_pop() else {
+            intr_off();
+            if runq_is_empty() && ready_is_empty_cpu(cpu) {
                 unsafe {
-                    (*c).proc.replace(Arc::clone(p));
-                    swtch(&mut (*c).context, &p.data().context);
-                    // Process is done running for now.
-                    // It should have changed its p->state before coming back.
-                    (*c).proc.take();
+                    asm!("wfi");
                 }
             }
+            intr_on();
+            continue;
+        };
+
+        let p = &PROCS.pool[idx];
+        let mut inner = p.inner.lock();
+        if inner.state != ProcState::RUNNABLE {
+            continue;
+        }
+
+        // Switch to chosen process. It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
+        inner.state = ProcState::RUNNING;
+        inner.last_cpu = cpu;
+        unsafe {
+            (*c).proc.replace(Arc::clone(p));
+            swtch(&mut (*c).context, &p.data().context);
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            (*c).proc.take();
         }
     }
 }
@@ -941,7 +993,7 @@ fn sched<'a>(guard: MutexGuard<'a, ProcInner>, ctx: &mut Context) -> MutexGuard<
 pub fn yielding() {
     let p = Cpus::myproc().unwrap();
     let mut guard = p.inner.lock();
-    guard.state = ProcState::RUNNABLE;
+    make_runnable(p.idx, &mut guard);
     sched(guard, &mut p.data_mut().context);
 }
 
@@ -958,7 +1010,7 @@ pub fn reap_threads(parent: &Arc<Proc>) -> Result<()> {
             let mut g = c.inner.lock();
             g.killed = true;
             if g.state == ProcState::SLEEPING {
-                g.state = ProcState::RUNNABLE;
+                make_runnable(c.idx, &mut g);
             }
         }
     }
@@ -1065,13 +1117,13 @@ pub fn sleep<T>(chan: usize, mutex_guard: MutexGuard<'_, T>) -> MutexGuard<'_, T
 // Wake up all processes sleeping on chan.
 // Must be called without any "proc" lock.
 pub fn wakeup(chan: usize) {
-    for p in PROCS.pool.iter() {
+    for (idx, p) in PROCS.pool.iter().enumerate() {
         match Cpus::myproc() {
             Some(ref cp) if Arc::ptr_eq(p, cp) => (),
             _ => {
                 let mut guard = p.inner.lock();
                 if guard.state == ProcState::SLEEPING && guard.chan == chan {
-                    guard.state = ProcState::RUNNABLE;
+                    make_runnable(idx, &mut guard);
                 }
             }
         }
@@ -1150,7 +1202,7 @@ pub fn fork() -> Result<usize> {
         let mut parents = PROCS.parents.lock();
         parents[c.idx] = Some(Arc::clone(&p));
     }
-    c_inner.lock().state = ProcState::RUNNABLE;
+    make_runnable(c.idx, &mut c_inner.lock());
 
     Ok(pid.0)
 }
@@ -1207,7 +1259,7 @@ pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize
         let mut parents = PROCS.parents.lock();
         parents[c.idx] = Some(Arc::clone(&p));
     }
-    c_inner.lock().state = ProcState::RUNNABLE;
+    make_runnable(c.idx, &mut c_inner.lock());
 
     Ok(pid.0)
 }
@@ -1261,13 +1313,13 @@ pub fn join(addr: UVAddr) -> Result<usize> {
 // The victim won't exit until it tries to return
 // to user space (see usertrap in trap.rs)
 pub fn kill(pid: usize) -> Result<()> {
-    for p in PROCS.pool.iter() {
+    for (idx, p) in PROCS.pool.iter().enumerate() {
         let mut guard = p.inner.lock();
         if guard.pid.0 == pid {
             guard.killed = true;
             if guard.state == ProcState::SLEEPING {
                 // Wake process from sleep().
-                guard.state = ProcState::RUNNABLE;
+                make_runnable(idx, &mut guard);
             }
             return Ok(());
         }
@@ -1431,70 +1483,106 @@ pub fn munmap(addr: usize, len: usize) -> Result<()> {
 
     let p = Cpus::myproc().unwrap();
     let data = p.data_mut();
-    let aspace = data.aspace.as_ref().unwrap();
-    let mut as_inner = aspace.inner.lock();
-    let uvm = as_inner.uvm.as_mut().unwrap();
 
     let start: UVAddr = addr.into();
     let len_pg = pgroundup(len);
     let end = start + len_pg;
 
+    let mut writebacks = Vec::new();
+
     // may touch multiple vmas
     let mut i = 0;
-    while i < data.vmas.len() {
-        let v = data.vmas[i].clone();
-        let v_start = v.start;
-        let v_end = v.end_pg();
+    {
+        let aspace = data.aspace.as_ref().unwrap();
+        let mut as_inner = aspace.inner.lock();
+        let uvm = as_inner.uvm.as_mut().unwrap();
 
-        let ov_start = if start > v_start { start } else { v_start };
-        let ov_end = if end < v_end { end } else { v_end };
+        while i < data.vmas.len() {
+            let v = data.vmas[i].clone();
+            let v_start = v.start;
+            let v_end = v.end_pg();
 
-        if ov_start >= ov_end {
+            let ov_start = if start > v_start { start } else { v_start };
+            let ov_end = if end < v_end { end } else { v_end };
+
+            if ov_start >= ov_end {
+                i += 1;
+                continue;
+            }
+
+            munmap_vma_range(uvm, &v, ov_start, ov_end - ov_start, &mut writebacks)?;
+
+            // adjust vma
+            let unmap_a = ov_start;
+            let unmap_b = ov_end;
+
+            if unmap_a == v_start && unmap_b == v_end {
+                data.vmas.remove(i);
+                continue;
+            } else if unmap_a == v_start {
+                let delta = unmap_b - v_start;
+                data.vmas[i].start = unmap_b;
+                data.vmas[i].file_off += delta;
+                data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
+            } else if unmap_b == v_end {
+                let delta = v_end - unmap_a;
+                data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
+            } else {
+                // split
+                let left_len = unmap_a - v_start;
+                let right_off = unmap_b - v_start;
+                let right_len = v_end - unmap_b;
+
+                let mut right = data.vmas[i].clone();
+                right.start = unmap_b;
+                right.file_off += right_off;
+                right.len = core::cmp::min(right.len.saturating_sub(right_off), right_len);
+
+                data.vmas[i].len = core::cmp::min(data.vmas[i].len, left_len);
+                data.vmas.insert(i + 1, right);
+                i += 1;
+            }
+
             i += 1;
-            continue;
         }
+    }
 
-        // unmap pages + writeback
-        munmap_vma_range(uvm, &v, ov_start, ov_end - ov_start)?;
-
-        // adjust vma
-        let unmap_a = ov_start;
-        let unmap_b = ov_end;
-
-        if unmap_a == v_start && unmap_b == v_end {
-            data.vmas.remove(i);
-            continue;
-        } else if unmap_a == v_start {
-            let delta = unmap_b - v_start;
-            data.vmas[i].start = unmap_b;
-            data.vmas[i].file_off += delta;
-            data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
-        } else if unmap_b == v_end {
-            let delta = v_end - unmap_a;
-            data.vmas[i].len = data.vmas[i].len.saturating_sub(delta);
-        } else {
-            // split
-            let left_len = unmap_a - v_start;
-            let right_off = unmap_b - v_start;
-            let right_len = v_end - unmap_b;
-
-            let mut right = data.vmas[i].clone();
-            right.start = unmap_b;
-            right.file_off += right_off;
-            right.len = core::cmp::min(right.len.saturating_sub(right_off), right_len);
-
-            data.vmas[i].len = core::cmp::min(data.vmas[i].len, left_len);
-            data.vmas.insert(i + 1, right);
-            i += 1;
-        }
-
-        i += 1;
+    for wb in writebacks {
+        wb.flush()?;
     }
 
     Ok(())
 }
 
-fn munmap_vma_range(uvm: &mut Uvm, v: &Vma, start: UVAddr, len_pg: usize) -> Result<()> {
+pub(crate) struct Writeback {
+    ip: Inode,
+    file_off: u32,
+    data: Box<Page>,
+    data_off: usize,
+    len: usize,
+}
+
+impl Writeback {
+    pub(crate) fn flush(self) -> Result<()> {
+        LOG.begin_op();
+        {
+            let mut guard = self.ip.lock();
+            let base = self.data.as_ref() as *const Page as usize;
+            let src = VirtAddr::Kernel(base + self.data_off);
+            let _ = guard.write(src, self.file_off, self.len)?;
+        }
+        LOG.end_op();
+        Ok(())
+    }
+}
+
+fn munmap_vma_range(
+    uvm: &mut Uvm,
+    v: &Vma,
+    start: UVAddr,
+    len_pg: usize,
+    writebacks: &mut Vec<Writeback>,
+) -> Result<()> {
     let mut a = start;
     let end = start + len_pg;
 
@@ -1522,13 +1610,26 @@ fn munmap_vma_range(uvm: &mut Uvm, v: &Vma, start: UVAddr, len_pg: usize) -> Res
                         return Err(InvalidArgument);
                     }
 
-                    LOG.begin_op();
-                    {
-                        let mut guard = ip.lock();
-                        let pa = pte.to_pa().into_usize() + (write_start - a.into_usize());
-                        let _ = guard.write(VirtAddr::Kernel(pa), file_off as u32, n)?;
+                    let mut buf = match Box::<Page>::try_new_zeroed() {
+                        Ok(mem) => unsafe { mem.assume_init() },
+                        Err(_) => return Err(OutOfMemory),
+                    };
+                    let pa = pte.to_pa().into_usize();
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            pa as *const u8,
+                            buf.as_mut() as *mut Page as *mut u8,
+                            PGSIZE,
+                        );
                     }
-                    LOG.end_op();
+
+                    writebacks.push(Writeback {
+                        ip,
+                        file_off: file_off as u32,
+                        data: buf,
+                        data_off: write_start - a.into_usize(),
+                        len: n,
+                    });
                 }
             }
 
@@ -1556,22 +1657,22 @@ pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()>
 
     let v = data.vmas[idx].clone();
 
-    let aspace = data.aspace.as_ref().unwrap();
-    let mut as_inner = aspace.inner.lock();
-    let uvm = as_inner.uvm.as_mut().unwrap();
-
-    (|| -> Result<()> {
-        // permission check based on fault type
-        match cause {
-            Exception::LoadPageFault if (v.prot & PROT_READ) == 0 => return Err(PermissionDenied),
-            Exception::StorePageFault if (v.prot & PROT_WRITE) == 0 => {
-                return Err(PermissionDenied);
-            }
-            Exception::InstructionPageFault if (v.prot & PROT_EXEC) == 0 => {
-                return Err(PermissionDenied);
-            }
-            _ => {}
+    // permission check based on fault type
+    match cause {
+        Exception::LoadPageFault if (v.prot & PROT_READ) == 0 => return Err(PermissionDenied),
+        Exception::StorePageFault if (v.prot & PROT_WRITE) == 0 => {
+            return Err(PermissionDenied);
         }
+        Exception::InstructionPageFault if (v.prot & PROT_EXEC) == 0 => {
+            return Err(PermissionDenied);
+        }
+        _ => {}
+    }
+
+    let aspace = data.aspace.as_ref().unwrap();
+    {
+        let mut as_inner = aspace.inner.lock();
+        let uvm = as_inner.uvm.as_mut().unwrap();
 
         // already mapped?
         if let Some(pte) = uvm.walk(va, false)
@@ -1581,31 +1682,49 @@ pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()>
         {
             return Err(BadVirtAddr);
         }
+    }
 
-        let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
+    let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
 
-        // file-backed fill
-        if !v.is_anon()
-            && let Some(f) = v.file.as_ref()
-            && let Some(ip) = f.inode()
-        {
-            let page_off = va - v.start;
-            let file_off = v.file_off + page_off;
+    if !v.is_anon()
+        && let Some(f) = v.file.as_ref()
+        && let Some(ip) = f.inode()
+    {
+        let page_off = va - v.start;
+        let file_off = v.file_off + page_off;
 
-            if file_off <= u32::MAX as usize {
-                let mut guard = ip.lock();
-                let _ = guard.read(VirtAddr::Kernel(mem as usize), file_off as u32, PGSIZE)?;
+        if file_off <= u32::MAX as usize {
+            let mut guard = ip.lock();
+            if let Err(err) = guard.read(VirtAddr::Kernel(mem as usize), file_off as u32, PGSIZE) {
+                unsafe {
+                    let _pg = Box::from_raw(mem);
+                }
+                return Err(err);
             }
         }
+    }
 
-        if let Err(err) = uvm.mappages(va, (mem as usize).into(), PGSIZE, v.perm()) {
-            unsafe {
-                let _pg = Box::from_raw(mem);
-            }
-            return Err(err);
+    let mut as_inner = aspace.inner.lock();
+    let uvm = as_inner.uvm.as_mut().unwrap();
+
+    if let Some(pte) = uvm.walk(va, false)
+        && pte.is_v()
+        && pte.is_leaf()
+        && pte.is_u()
+    {
+        unsafe {
+            let _pg = Box::from_raw(mem);
         }
-        crate::kalloc::page_ref_init(mem as usize);
+        return Ok(());
+    }
 
-        Ok(())
-    })()
+    if let Err(err) = uvm.mappages(va, (mem as usize).into(), PGSIZE, v.perm()) {
+        unsafe {
+            let _pg = Box::from_raw(mem);
+        }
+        return Err(err);
+    }
+    crate::kalloc::page_ref_init(mem as usize);
+
+    Ok(())
 }

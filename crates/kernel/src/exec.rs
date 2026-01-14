@@ -244,12 +244,18 @@ pub fn exec(
         tf.epc = elf.e_entry; // initial program counter = main
         tf.sp = sp.into_usize(); // initial stack pointer
         if let Some(old_aspace) = old_aspace {
-            let mut inner = old_aspace.inner.lock();
-            if let Some(mut olduvm) = inner.uvm.take() {
+            let olduvm = {
+                let mut inner = old_aspace.inner.lock();
+                inner.uvm.take()
+            };
+            if let Some(mut olduvm) = olduvm {
                 // must unmap mmap leaf PTEs before freewalk
-                proc_data.munmap_all(&mut olduvm);
+                let writebacks = proc_data.munmap_all(&mut olduvm);
                 proc_data.mmap_base = user_mem_top(NPROC);
                 olduvm.proc_uvmfree(oldsz);
+                for wb in writebacks {
+                    let _ = wb.flush();
+                }
             }
         }
 

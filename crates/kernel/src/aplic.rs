@@ -1,6 +1,8 @@
 use core::ptr;
 
-use crate::memlayout::{APLIC_M, APLIC_S, IMSIC_M, IMSIC_S, UART0_IRQ, VIRTIO0_IRQ};
+use crate::memlayout::{
+    APLIC_M, APLIC_S, IMSIC_M, IMSIC_S, UART0_HART, UART0_IRQ, VIRTIO0_HART, VIRTIO0_IRQ,
+};
 
 // Register offsets
 const DOMAINCFG: usize = 0x0000;
@@ -153,7 +155,7 @@ pub fn init() {
     // Route all device MSIs to hart0 so early boot doesn't depend on other harts
     // having IMSIC/trap fully initialized yet.
     for irq in [UART0_IRQ, VIRTIO0_IRQ] {
-        sup.set_target_msi(irq, 0, 0, irq);
+        sup.set_target_msi(irq, UART0_HART as u32, VIRTIO0_HART as u32, irq);
         sup.set_sourcecfg(irq, SourceMode::LevelHigh);
         sup.set_ie(irq, true);
     }

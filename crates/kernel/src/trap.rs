@@ -12,6 +12,7 @@ use crate::{
     },
     spinlock::Mutex,
     syscall::syscall,
+    task,
     trampoline::trampoline,
     uart::UART,
     virtio_disk::DISK,
@@ -147,6 +148,13 @@ pub extern "C" fn usertrap() -> ! {
         proc::yielding()
     }
 
+    if Some(Intr::Device) == which_dev {
+        let cpu = unsafe { Cpus::cpu_id() };
+        if !task::ready_is_empty_cpu(cpu) {
+            proc::yielding()
+        }
+    }
+
     unsafe { usertrap_ret() }
 }
 
@@ -250,10 +258,14 @@ pub extern "C" fn kerneltrap() {
     }
 
     // give up the CPU if this is a timer interrupt.
-    if Some(Intr::Timer) == which_dev
-        && let Some(p) = Cpus::myproc()
-        && p.inner.lock().state == ProcState::RUNNING
-    {
+    let should_yield = if Some(Intr::Timer) != which_dev {
+        false
+    } else if let Some(p) = Cpus::myproc() {
+        p.inner.lock().state == ProcState::RUNNING
+    } else {
+        false
+    };
+    if should_yield {
         proc::yielding()
     }
 
@@ -264,9 +276,13 @@ pub extern "C" fn kerneltrap() {
 }
 
 fn clockintr() {
-    let mut ticks = TICKS.lock();
-    *ticks += 1;
-    proc::wakeup(&(*ticks) as *const _ as usize)
+    let cpu = unsafe { Cpus::cpu_id() };
+    task::on_tick_cpu(cpu);
+    if cpu == 0 {
+        let mut ticks = TICKS.lock();
+        *ticks += 1;
+        proc::wakeup(&(*ticks) as *const _ as usize)
+    }
 }
 
 // check if it's an external interrupt or software interrupt,
@@ -297,9 +313,7 @@ fn devintr(intr: Interrupt) -> Option<Intr> {
         Interrupt::SupervisorSoft => {
             // software interrupt from a machine-mode timer interrupt,
             // forwarded by timervec in kernelvec.rs.
-            if unsafe { Cpus::cpu_id() == 0 } {
-                clockintr();
-            }
+            clockintr();
 
             // acknowledge the software interrupt by clearing
             // the SSIP bit in sip.

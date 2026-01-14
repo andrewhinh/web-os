@@ -100,11 +100,6 @@ path = "src/bin/pdual_demo.rs"
 test = false
 
 [[bin]]
-name = "_pdual_child"
-path = "src/bin/pdual_child.rs"
-test = false
-
-[[bin]]
 name = "_cow"
 path = "src/bin/cow.rs"
 test = false
@@ -122,6 +117,11 @@ test = false
 [[bin]]
 name = "_aplicdemo"
 path = "src/bin/aplicdemo.rs"
+test = false
+
+[[bin]]
+name = "_ktaskdemo"
+path = "src/bin/ktaskdemo.rs"
 test = false
 
 [dependencies]

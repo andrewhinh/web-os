@@ -23,6 +23,7 @@ use crate::{
     proc::*,
     riscv::PGSIZE,
     stat::FileType,
+    task,
     trap::TICKS,
     vm::{Addr, UVAddr},
 };
@@ -60,6 +61,7 @@ pub enum SysCalls {
     Clone = 28,
     Join = 29,
     ExtIrqCount = 30,
+    KTaskPolls = 31,
     Invalid = 0,
 }
 
@@ -137,6 +139,7 @@ impl SysCalls {
         ),
         (Fn::I(Self::join), "(stack: &mut usize)"),
         (Fn::I(Self::ext_irq_count), "()"),
+        (Fn::I(Self::ktaskpolls), "()"),
     ];
 
     pub fn invalid() -> ! {
@@ -525,6 +528,15 @@ impl SysCalls {
             Ok(crate::trap::EXT_IRQS.load(Ordering::Relaxed))
         }
     }
+
+    pub fn ktaskpolls() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            Ok(task::poll_count_total())
+        }
+    }
 }
 
 // System Calls related to File operations
@@ -545,18 +557,29 @@ impl SysCalls {
         return Ok(0);
         #[cfg(all(target_os = "none", feature = "kernel"))]
         {
-            // src , dst
             let p = Cpus::myproc().unwrap().data_mut();
             let src_fd = argraw(0);
             let dst_fd = argraw(1);
-            if src_fd != dst_fd {
-                let mut src = p.ofile.get_mut(src_fd).unwrap().take().unwrap();
-                src.clear_cloexec();
-                p.ofile
-                    .get_mut(dst_fd)
-                    .ok_or(FileDescriptorTooLarge)?
-                    .replace(src);
+            if src_fd == dst_fd {
+                return Ok(dst_fd);
             }
+
+            let src = p
+                .ofile
+                .get(src_fd)
+                .ok_or(FileDescriptorTooLarge)?
+                .as_ref()
+                .ok_or(BadFileDescriptor)?
+                .clone();
+
+            let mut dst = src;
+            dst.clear_cloexec();
+
+            p.ofile
+                .get_mut(dst_fd)
+                .ok_or(FileDescriptorTooLarge)?
+                .replace(dst);
+
             Ok(dst_fd)
         }
     }
@@ -862,6 +885,7 @@ impl SysCalls {
             28 => Self::Clone,
             29 => Self::Join,
             30 => Self::ExtIrqCount,
+            31 => Self::KTaskPolls,
             _ => Self::Invalid,
         }
     }

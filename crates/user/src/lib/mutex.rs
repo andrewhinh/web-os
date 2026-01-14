@@ -23,7 +23,7 @@ impl<T> Mutex<T> {
         }
     }
 
-    pub fn lock(&self) -> MutexGuard<T> {
+    pub fn lock(&self) -> MutexGuard<'_, T> {
         while self.locked.swap(true, Ordering::Acquire) {
             core::hint::spin_loop();
         }

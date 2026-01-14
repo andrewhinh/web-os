@@ -531,6 +531,12 @@ impl Child {
 #[derive(Debug)]
 pub struct ChildStdin(File);
 
+impl From<ChildStdin> for Stdio {
+    fn from(value: ChildStdin) -> Self {
+        Stdio::Fd(value.0)
+    }
+}
+
 #[derive(Debug)]
 pub struct ChildStdout(File);
 

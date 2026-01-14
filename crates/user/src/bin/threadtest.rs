@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 
-use ulib::{mutex::Mutex, print, println, sys, thread};
+use ulib::{mutex::Mutex, println, sys, thread};
 
 static COUNT: Mutex<usize> = Mutex::new(0);
 

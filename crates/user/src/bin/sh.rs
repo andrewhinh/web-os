@@ -1,9 +1,6 @@
 #![no_std]
 extern crate alloc;
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 
 use ulib::{
     env, eprintln,
@@ -161,7 +158,7 @@ fn set_path_from_etc_paths() -> sys::Result<()> {
             }
         }
         let new_path = paths.join(":");
-        env::set_var("PATH", &new_path);
+        let _ = env::set_var("PATH", &new_path);
     }
     Ok(())
 }

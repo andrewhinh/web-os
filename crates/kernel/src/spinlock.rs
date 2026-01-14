@@ -62,8 +62,10 @@ impl<T> Mutex<T> {
         unsafe { self.locked.load(Ordering::Relaxed) == CPUS.mycpu() }
     }
 
-    pub fn unlock(guard: MutexGuard<'_, T>) -> &'_ Mutex<T> {
-        guard.mutex()
+    pub fn unlock<'a>(guard: MutexGuard<'a, T>) -> &'a Mutex<T> {
+        let m = guard.mutex as *const Mutex<T>;
+        drop(guard);
+        unsafe { &*m }
     }
 
     #[allow(clippy::mut_from_ref)]

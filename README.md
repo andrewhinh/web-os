@@ -43,7 +43,7 @@ act push --bind                                  # test CI
 - [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [ ] sockets: AF_UNIX
 - [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
-- [ ] cooperative, event-based scheduler for trusted kernel tasks
+- [x] cooperative, event-based scheduler for trusted kernel tasks
   - [blog_os](https://os.phil-opp.com/async-await/)
   - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)
   - [event-based concurrency](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-events.pdf)

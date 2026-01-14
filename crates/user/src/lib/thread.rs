@@ -54,7 +54,7 @@ pub fn thread_create(
     let start = Box::new(Start { f, arg1, arg2 });
     let start_ptr = Box::into_raw(start) as usize;
     let stack = alloc_stack_page()?;
-    sys::clone(thread_entry as usize, start_ptr, 0, stack)
+    sys::clone(thread_entry as *const () as usize, start_ptr, 0, stack)
 }
 
 pub fn thread_join() -> sys::Result<usize> {

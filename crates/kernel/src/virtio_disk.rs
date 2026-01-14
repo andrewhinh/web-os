@@ -404,8 +404,8 @@ impl Disk {
             match self.alloc_desc() {
                 Some(ix) => *idxi = ix,
                 None => {
-                    for j in 0..i {
-                        self.free_desc(j)
+                    for &desc in idx.iter().take(i) {
+                        self.free_desc(desc)
                     }
                     return Err(());
                 }
@@ -506,7 +506,6 @@ impl Mutex<Disk> {
     }
 
     pub fn intr(&self) {
-        let mut guard = self.lock();
         // the device won't raise another interrupt until we tell it
         // we've seen this interrupt, which the following line does.
         // this may race with the device writing new entries to
@@ -520,26 +519,115 @@ impl Mutex<Disk> {
 
         fence(Ordering::SeqCst);
 
-        // the device increments disk.used.idx when it
-        // adds an entry to the used ring.
+        let mut guard = self.lock();
+        fence(Ordering::SeqCst);
         while guard.used_idx != guard.used.idx {
             fence(Ordering::SeqCst);
             let id = guard.used.ring[guard.used_idx as usize % NUM].id as usize;
-
             if guard.info[id].status != 0 {
                 panic!("disk intr status");
             }
-
             let b = guard.info[id].buf.as_mut().unwrap();
-            b.disk = false; // disk is done with buf
+            b.disk = false;
             proc::wakeup(&b.data as *const _ as usize);
             guard.used_idx += 1;
         }
+        async_tasks::notify_irq();
     }
 }
 
 pub fn init() {
     unsafe {
         DISK.get_mut().init();
+    }
+}
+
+pub fn spawn_tasks() {
+    async_tasks::spawn_tasks();
+}
+
+mod async_tasks {
+    use core::{
+        future::Future,
+        pin::Pin,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Poll, Waker},
+    };
+
+    use crate::{
+        memlayout::VIRTIO0_HART,
+        proc,
+        spinlock::Mutex,
+        task::{Task, spawn_on},
+        virtio_disk::{DISK, VirtioMMIO},
+    };
+
+    static IRQ_SEQ: AtomicUsize = AtomicUsize::new(0);
+    static IRQ_WAKER: Mutex<Option<Waker>> = Mutex::new(None, "diskw");
+
+    pub(super) fn notify_irq() {
+        IRQ_SEQ.fetch_add(1, Ordering::Release);
+        if let Some(w) = IRQ_WAKER.lock().as_ref() {
+            w.wake_by_ref();
+        }
+    }
+
+    struct NextIrq {
+        seen: usize,
+    }
+
+    impl Future for NextIrq {
+        type Output = usize;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<usize> {
+            let now = IRQ_SEQ.load(Ordering::Acquire);
+            if now != self.seen {
+                self.seen = now;
+                return Poll::Ready(now);
+            }
+            *IRQ_WAKER.lock() = Some(cx.waker().clone());
+            let now2 = IRQ_SEQ.load(Ordering::Acquire);
+            if now2 != self.seen {
+                self.seen = now2;
+                Poll::Ready(now2)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    pub(super) fn spawn_tasks() {
+        spawn_on(VIRTIO0_HART, Task::new(disk_task()));
+    }
+
+    async fn disk_task() {
+        let mut seen = IRQ_SEQ.load(Ordering::Acquire);
+        loop {
+            seen = NextIrq { seen }.await;
+            drain_completions();
+        }
+    }
+
+    fn drain_completions() {
+        use core::sync::atomic::fence;
+
+        let mut guard = DISK.lock();
+
+        fence(Ordering::SeqCst);
+        while guard.used_idx != guard.used.idx {
+            fence(Ordering::SeqCst);
+            let id = guard.used.ring[guard.used_idx as usize % super::NUM].id as usize;
+
+            if guard.info[id].status != 0 {
+                panic!("disk intr status");
+            }
+
+            let b = guard.info[id].buf.as_mut().unwrap();
+            b.disk = false;
+            proc::wakeup(&b.data as *const _ as usize);
+            guard.used_idx += 1;
+        }
+
+        let _ = VirtioMMIO::InterruptStatus.read();
     }
 }
