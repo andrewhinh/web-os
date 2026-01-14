@@ -50,6 +50,8 @@ pub mod uart;
 #[macro_use]
 pub mod printf;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod aplic;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod bio;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod buddy;
@@ -64,6 +66,8 @@ pub mod fcntl;
 pub mod file;
 pub mod fs;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod imsic;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod kalloc;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod list;
@@ -72,8 +76,6 @@ pub mod log;
 pub mod mmap;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod pipe;
-#[cfg(all(target_os = "none", feature = "kernel"))]
-pub mod plic;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod riscv;
 pub mod stat;
@@ -128,8 +130,7 @@ pub extern "C" fn test_main_entry() -> ! {
         vm::kinithart();
         proc::init();
         trap::inithart();
-        plic::init();
-        plic::inithart();
+        aplic::init();
         bio::init();
         virtio_disk::init();
 
@@ -142,7 +143,6 @@ pub extern "C" fn test_main_entry() -> ! {
         }
         vm::kinithart();
         trap::inithart();
-        plic::inithart();
     }
 
     #[allow(clippy::empty_loop)]

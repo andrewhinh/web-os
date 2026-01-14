@@ -119,6 +119,11 @@ name = "_threadtest"
 path = "src/bin/threadtest.rs"
 test = false
 
+[[bin]]
+name = "_aplicdemo"
+path = "src/bin/aplicdemo.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

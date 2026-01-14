@@ -9,8 +9,8 @@ use crate::defs::AsBytes;
 use crate::error::{Error::*, Result};
 use crate::kalloc;
 use crate::memlayout::{
-    KERNBASE, PHYSTOP, PLIC, SIFIVE_TEST, STACK_PAGE_NUM, TRAMPOLINE, TRAPFRAME, UART0, VIRTIO0,
-    trapframe_va, user_mem_top,
+    APLIC_M, APLIC_S, IMSIC_M, IMSIC_S, KERNBASE, PHYSTOP, SIFIVE_TEST, STACK_PAGE_NUM, TRAMPOLINE,
+    TRAPFRAME, UART0, VIRTIO0, trapframe_va, user_mem_top,
 };
 use crate::param::NPROC;
 use crate::proc::PROCS;
@@ -788,8 +788,11 @@ impl Kvm {
         // virtio mmio disk interface
         self.map(VIRTIO0.into(), VIRTIO0.into(), PGSIZE, PTE_R | PTE_W);
 
-        // PLIC
-        self.map(PLIC.into(), PLIC.into(), 0x0040_0000, PTE_R | PTE_W);
+        // APLIC domains and IMSIC interrupt file regions
+        self.map(APLIC_M.into(), APLIC_M.into(), 0x8000, PTE_R | PTE_W);
+        self.map(APLIC_S.into(), APLIC_S.into(), 0x8000, PTE_R | PTE_W);
+        self.map(IMSIC_M.into(), IMSIC_M.into(), 0x8000, PTE_R | PTE_W);
+        self.map(IMSIC_S.into(), IMSIC_S.into(), 0x8000, PTE_R | PTE_W);
 
         // map kernel text executable and read-only.
         self.map(

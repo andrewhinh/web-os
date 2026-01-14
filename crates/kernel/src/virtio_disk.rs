@@ -352,7 +352,7 @@ impl Disk {
             status |= virtio_status::DRIVER_OK;
             VirtioMMIO::Status.write(status);
 
-            // plic.rs and trap.rs arrange for interrupts from VIRTIO0_IRQ.
+            // imsic.rs and trap.rs arrange for interrupts from VIRTIO0_IRQ.
         }
     }
 

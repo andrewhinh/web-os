@@ -2,7 +2,7 @@
 runner = [
     "qemu-system-riscv64",
     "-machine",
-    "virt",
+    "virt,aia=aplic-imsic",
     "-bios",
     "none",
     "-m",

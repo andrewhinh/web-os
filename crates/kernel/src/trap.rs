@@ -1,9 +1,10 @@
 use core::arch::asm;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
+    imsic,
     kernelvec::kernelvec,
     memlayout::{STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ},
-    plic,
     proc::{self, Cpus, ProcState},
     riscv::{
         registers::{scause::*, *},
@@ -29,6 +30,7 @@ pub enum Intr {
 }
 
 pub static TICKS: Mutex<usize> = Mutex::new(0, "time");
+pub static EXT_IRQS: AtomicUsize = AtomicUsize::new(0);
 
 // set up to take exceptions and traps while in the kernel.
 #[unsafe(no_mangle)]
@@ -36,6 +38,7 @@ pub fn inithart() {
     unsafe {
         stvec::write(kernelvec as *const () as usize, stvec::TrapMode::Direct);
     }
+    imsic::init_hart();
 }
 
 // handle an interrupt, exception, or system call from user space.
@@ -274,21 +277,19 @@ fn clockintr() {
 fn devintr(intr: Interrupt) -> Option<Intr> {
     match intr {
         Interrupt::SupervisorExternal => {
-            // this is a supervisor external interrupt, via PLIC.
-
-            // irq indicates which device interrupted.
-            let irq = plic::claim();
-
-            if let Some(irq) = irq {
-                match irq {
+            // Supervisor external interrupt delivered via IMSIC.
+            // Drain all pending messages. Each pop() claims and clears one message.
+            loop {
+                let msg = imsic::pop();
+                if msg == 0 {
+                    break;
+                }
+                EXT_IRQS.fetch_add(1, Ordering::Relaxed);
+                match msg {
                     UART0_IRQ => UART.intr(),
                     VIRTIO0_IRQ => DISK.intr(),
-                    _ => println!("unexpected interrupt irq={}", irq),
+                    _ => println!("unexpected msi msg={}", msg),
                 }
-                // the PLIC allows each device to raise at most one
-                // interrupt at a time; tell the PLIC the device is
-                // now allowed to interrupt again.
-                plic::complete(irq);
             }
 
             Some(Intr::Device)

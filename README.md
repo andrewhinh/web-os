@@ -47,7 +47,7 @@ act push --bind                                  # test CI
   - [blog_os](https://os.phil-opp.com/async-await/)
   - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)
   - [event-based concurrency](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-events.pdf)
-- [ ] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) + [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
+- [x] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) + [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
 - [ ] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
 
 ### App

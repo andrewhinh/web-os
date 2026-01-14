@@ -59,6 +59,7 @@ pub enum SysCalls {
     MunMap = 27,
     Clone = 28,
     Join = 29,
+    ExtIrqCount = 30,
     Invalid = 0,
 }
 
@@ -135,6 +136,7 @@ impl SysCalls {
             "(fcn: usize, arg1: usize, arg2: usize, stack: usize)",
         ),
         (Fn::I(Self::join), "(stack: &mut usize)"),
+        (Fn::I(Self::ext_irq_count), "()"),
     ];
 
     pub fn invalid() -> ! {
@@ -512,6 +514,17 @@ impl SysCalls {
             Ok(crate::kalloc::free_pages())
         }
     }
+
+    pub fn ext_irq_count() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            use core::sync::atomic::Ordering;
+            Ok(crate::trap::EXT_IRQS.load(Ordering::Relaxed))
+        }
+    }
 }
 
 // System Calls related to File operations
@@ -848,6 +861,7 @@ impl SysCalls {
             27 => Self::MunMap,
             28 => Self::Clone,
             29 => Self::Join,
+            30 => Self::ExtIrqCount,
             _ => Self::Invalid,
         }
     }

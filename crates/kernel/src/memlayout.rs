@@ -7,7 +7,7 @@ use crate::vm::{KVAddr, VAddr};
 //
 // 00001000 -- boot ROM, provided by qemu
 // 02000000 -- CLINT
-// 0C000000 -- PLIC
+// 0C000000 -- APLIC
 // 10000000 -- uart0
 // 10001000 -- virtio disk
 // 80000000 -- boot ROM jumps here in machine mode
@@ -53,6 +53,13 @@ pub const fn PLIC_SPRIORITY(hart: usize) -> usize {
 pub const fn PLIC_SCLAIM(hart: usize) -> usize {
     PLIC + 0x201004 + hart * 0x2000
 }
+
+// qemu-system-riscv64 -machine virt,aia=aplic-imsic,dumpdtb=...
+pub const APLIC_M: usize = 0x0C00_0000;
+pub const APLIC_S: usize = 0x0D00_0000;
+pub const IMSIC_M: usize = 0x2400_0000;
+pub const IMSIC_S: usize = 0x2800_0000;
+pub const IMSIC_STRIDE: usize = 0x1000;
 
 // the kernel expects there to be RAM
 // for use by the kernel and user pages

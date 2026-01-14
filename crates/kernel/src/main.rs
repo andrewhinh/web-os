@@ -6,7 +6,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernel::{
-    bio, console, kalloc, kmain, null, plic, println,
+    aplic, bio, console, kalloc, kmain, null, println,
     proc::{self, Cpus, scheduler, user_init},
     trap, virtio_disk, vm,
 };
@@ -30,8 +30,7 @@ extern "C" fn main() -> ! {
         vm::kinithart(); // turn on paging
         proc::init(); // process table
         trap::inithart(); // install kernel trap vector
-        plic::init();
-        plic::inithart();
+        aplic::init(); // set up interrupt controller (APLIC -> IMSIC MSIs)
         bio::init(); // buffer cache
         virtio_disk::init(); // emulated hard disk
         user_init(initcode);
@@ -42,7 +41,6 @@ extern "C" fn main() -> ! {
         }
         vm::kinithart(); // turn on paging
         trap::inithart(); // install kernel trap vector
-        plic::inithart();
     }
     scheduler()
 }
