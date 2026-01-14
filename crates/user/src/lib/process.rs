@@ -317,8 +317,8 @@ impl<'a> Command<'a> {
         let pid = self.do_fork()?;
         if pid == 0 {
             drop(input);
-            let Err(err) = self.do_exec(theirs, envp) else {
-                unreachable!()
+            let err = match self.do_exec(theirs, envp) {
+                Err(err) => err,
             };
             let err = (err as isize).to_be_bytes();
             output.write(&err).unwrap();

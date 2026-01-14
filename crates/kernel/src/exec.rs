@@ -1,4 +1,5 @@
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use core::mem::size_of;
 
 use crate::{
@@ -6,9 +7,9 @@ use crate::{
     error::{Error::*, Result},
     fs::{IData, Path},
     log::LOG,
-    memlayout::{STACK_PAGE_NUM, TRAPFRAME},
-    param::MAXARG,
-    proc::Cpus,
+    memlayout::{STACK_PAGE_NUM, user_mem_top},
+    param::{MAXARG, NPROC},
+    proc::{self, AddrSpace, Cpus},
     riscv::{PGSIZE, pgroundup, pteflags},
     sleeplock::SleepLockGuard,
     vm::{Addr, UVAddr, Uvm, VirtAddr},
@@ -61,6 +62,16 @@ pub fn exec(
     envp: [Option<String>; MAXARG],
 ) -> Result<usize> {
     let p = Cpus::myproc().unwrap();
+    if p.data().is_thread {
+        return Err(PermissionDenied);
+    }
+    // Ensure we are single-threaded before replacing the address space.
+    proc::reap_threads(&p)?;
+    if let Some(aspace) = p.data().aspace.as_ref()
+        && Arc::strong_count(aspace) != 1
+    {
+        return Err(WouldBlock);
+    }
 
     let mut uvm: Option<Uvm> = None;
     let mut ustack = [0usize; MAXARG * 2]; // &str = [usize, usize]
@@ -136,8 +147,6 @@ pub fn exec(
         let proc_data = p.data_mut();
 
         let tf = proc_data.trapframe.as_mut().unwrap();
-
-        let oldsz = proc_data.sz;
 
         // Allocate some pages at the next page boundary.
         // Make the first inaccessible as a stack guard.
@@ -225,15 +234,23 @@ pub fn exec(
         }
 
         // Commit to the user image.
-        let mut olduvm = proc_data.uvm.replace(uvm.take().unwrap());
-        proc_data.sz = sz;
+        let old_aspace = proc_data
+            .aspace
+            .replace(Arc::new(AddrSpace::new(uvm.take().unwrap(), sz)));
+        let oldsz = old_aspace
+            .as_ref()
+            .map(|aspace| aspace.inner.lock().sz)
+            .unwrap_or(0);
         tf.epc = elf.e_entry; // initial program counter = main
         tf.sp = sp.into_usize(); // initial stack pointer
-        if let Some(mut olduvm) = olduvm.take() {
-            // must unmap mmap leaf PTEs before freewalk
-            proc_data.munmap_all(&mut olduvm);
-            proc_data.mmap_base = TRAPFRAME;
-            olduvm.proc_uvmfree(oldsz);
+        if let Some(old_aspace) = old_aspace {
+            let mut inner = old_aspace.inner.lock();
+            if let Some(mut olduvm) = inner.uvm.take() {
+                // must unmap mmap leaf PTEs before freewalk
+                proc_data.munmap_all(&mut olduvm);
+                proc_data.mmap_base = user_mem_top(NPROC);
+                olduvm.proc_uvmfree(oldsz);
+            }
         }
 
         Ok(argc) // this ends up in a0, the first argument to main(argc, args:

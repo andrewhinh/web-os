@@ -21,7 +21,7 @@ pub struct Stdin {
 
 pub fn stdin() -> Stdin {
     Stdin {
-        inner: unsafe { &raw mut STDIN },
+        inner: &raw mut STDIN,
     }
 }
 
@@ -77,7 +77,7 @@ pub struct Stdout {
 
 pub fn stdout() -> Stdout {
     Stdout {
-        inner: unsafe { &raw mut STDOUT },
+        inner: &raw mut STDOUT,
     }
 }
 
@@ -116,7 +116,7 @@ pub struct Stderr {
 
 pub fn stderr() -> Stderr {
     Stderr {
-        inner: unsafe { &raw mut STDERR },
+        inner: &raw mut STDERR,
     }
 }
 

@@ -57,6 +57,8 @@ pub enum SysCalls {
     Freepages = 25,
     MMap = 26,
     MunMap = 27,
+    Clone = 28,
+    Join = 29,
     Invalid = 0,
 }
 
@@ -128,6 +130,11 @@ impl SysCalls {
             "(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, offset: usize)",
         ), //
         (Fn::U(Self::munmap), "(addr: usize, len: usize)"), //
+        (
+            Fn::I(Self::clone),
+            "(fcn: usize, arg1: usize, arg2: usize, stack: usize)",
+        ),
+        (Fn::I(Self::join), "(stack: &mut usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -178,7 +185,9 @@ unsafe impl AsBytes for SBInfo {}
 #[cfg(all(target_os = "none", feature = "kernel"))]
 fn fetch_addr<T: AsBytes>(addr: UVAddr, buf: &mut T) -> Result<()> {
     let p_data = Cpus::myproc().unwrap().data();
-    if addr.into_usize() >= p_data.sz || addr.into_usize() + size_of_val(buf) > p_data.sz {
+    let aspace = p_data.aspace.as_ref().unwrap();
+    let sz = aspace.inner.lock().sz;
+    if addr.into_usize() >= sz || addr.into_usize() + size_of_val(buf) > sz {
         return Err(BadVirtAddr);
     }
     either_copyin(buf, addr.into())
@@ -378,6 +387,20 @@ impl SysCalls {
         }
     }
 
+    pub fn clone() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let fcn = argraw(0);
+            let arg1 = argraw(1);
+            let arg2 = argraw(2);
+            let stack = argraw(3);
+            clone(fcn, arg1, arg2, stack)
+        }
+    }
+
     pub fn wait() -> Result<usize> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(0);
@@ -388,6 +411,16 @@ impl SysCalls {
         }
     }
 
+    pub fn join() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let addr: UVAddr = argraw(0).into();
+            join(addr)
+        }
+    }
+
     pub fn sbrk() -> Result<usize> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(0);
@@ -395,7 +428,7 @@ impl SysCalls {
         {
             let p = Cpus::myproc().unwrap();
             let n = argraw(0) as isize;
-            let addr = p.data().sz;
+            let addr = p.data().aspace.as_ref().unwrap().inner.lock().sz;
             grow(n).and(Ok(addr))
         }
     }
@@ -813,6 +846,8 @@ impl SysCalls {
             25 => Self::Freepages,
             26 => Self::MMap,
             27 => Self::MunMap,
+            28 => Self::Clone,
+            29 => Self::Join,
             _ => Self::Invalid,
         }
     }

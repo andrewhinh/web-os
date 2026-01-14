@@ -82,3 +82,15 @@ pub const fn kstack(p: usize) -> KVAddr {
 //   TRAPFRAME (p->trapframe, used by trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 pub const TRAPFRAME: usize = TRAMPOLINE - PGSIZE;
+
+// Reserve a per-proc trapframe VA slot to allow multiple threads to share a
+// single user page table with distinct trapframes.
+pub const fn trapframe_va(proc_idx: usize) -> usize {
+    TRAPFRAME - proc_idx * PGSIZE
+}
+
+// Highest user address that regular user allocations
+// reach.
+pub const fn user_mem_top(nproc: usize) -> usize {
+    TRAMPOLINE - nproc * PGSIZE
+}

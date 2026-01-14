@@ -10,7 +10,9 @@ use crate::error::{Error::*, Result};
 use crate::kalloc;
 use crate::memlayout::{
     KERNBASE, PHYSTOP, PLIC, SIFIVE_TEST, STACK_PAGE_NUM, TRAMPOLINE, TRAPFRAME, UART0, VIRTIO0,
+    trapframe_va, user_mem_top,
 };
+use crate::param::NPROC;
 use crate::proc::PROCS;
 use crate::riscv::{PGSHIFT, PGSIZE, pgroundup, pteflags::*, registers::satp, sfence_vma};
 use crate::sync::OnceLock;
@@ -476,6 +478,9 @@ impl Uvm {
         if newsz < oldsz {
             return Ok(oldsz);
         }
+        if newsz >= user_mem_top(NPROC) {
+            return Err(BadVirtAddr);
+        }
 
         oldsz = pgroundup(oldsz);
         for a in (oldsz..newsz).step_by(PGSIZE) {
@@ -698,8 +703,39 @@ impl Uvm {
     // physical memory it refers to.
     pub fn proc_uvmfree(mut self, size: usize) {
         self.unmap(TRAMPOLINE.into(), 1, false);
-        self.unmap(TRAPFRAME.into(), 1, false);
+        // try all procs to see which proc this pagetable belongs to
+        let _ = self.try_unmap(TRAPFRAME.into(), 1, false);
+        for i in 0..NPROC {
+            let _ = self.try_unmap(trapframe_va(i).into(), 1, false);
+        }
         self.free(size);
+    }
+
+    pub fn try_unmap(&mut self, va: UVAddr, npages: usize, do_free: bool) -> Result<bool> {
+        if !va.is_aligned() {
+            return Err(BadVirtAddr);
+        }
+        let mut did = false;
+        let mut a = va;
+        while a < va + npages * PGSIZE {
+            if let Some(pte) = self.page_table.walk(a, false)
+                && pte.is_v()
+                && pte.is_leaf()
+            {
+                if do_free {
+                    let pa = pte.to_pa();
+
+                    unsafe {
+                        let _pg = Box::from_raw(pa.into_usize() as *mut Page);
+                    }
+                }
+                *pte = PageTableEntry(0);
+                did = true;
+            }
+            a += PGSIZE;
+        }
+
+        Ok(did)
     }
 }
 

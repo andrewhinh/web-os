@@ -114,6 +114,11 @@ name = "_mmapdemo"
 path = "src/bin/mmapdemo.rs"
 test = false
 
+[[bin]]
+name = "_threadtest"
+path = "src/bin/threadtest.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

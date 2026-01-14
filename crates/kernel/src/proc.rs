@@ -14,7 +14,7 @@ use crate::exec::flags2perm;
 use crate::file::File;
 use crate::fs::{self, Inode};
 use crate::log::LOG;
-use crate::memlayout::{STACK_PAGE_NUM, TRAMPOLINE, TRAPFRAME, kstack};
+use crate::memlayout::{STACK_PAGE_NUM, TRAMPOLINE, kstack, trapframe_va, user_mem_top};
 use crate::mmap::{MAP_ANON, MAP_PRIVATE, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::param::*;
 use crate::riscv::registers::scause::Exception;
@@ -32,6 +32,46 @@ pub static CPUS: Cpus = Cpus::new();
 #[allow(clippy::redundant_closure)]
 pub static PROCS: LazyLock<Procs> = LazyLock::new(|| Procs::new());
 pub static INITPROC: OnceLock<Arc<Proc>> = OnceLock::new();
+
+#[derive(Debug)]
+
+pub struct AddrSpace {
+    pub inner: Mutex<AddrSpaceInner>,
+}
+
+#[derive(Debug)]
+
+pub struct AddrSpaceInner {
+    pub uvm: Option<Uvm>,
+    pub sz: usize,
+}
+
+// Address spaces are shared across CPUs/threads.
+
+unsafe impl Send for AddrSpace {}
+unsafe impl Sync for AddrSpace {}
+
+impl AddrSpace {
+    pub fn new(uvm: Uvm, sz: usize) -> Self {
+        Self {
+            inner: Mutex::new(AddrSpaceInner { uvm: Some(uvm), sz }, "aspace"),
+        }
+    }
+}
+
+impl Drop for AddrSpace {
+    fn drop(&mut self) {
+        let mut inner = self.inner.lock();
+        let Some(mut uvm) = inner.uvm.take() else {
+            return;
+        };
+        let _ = uvm.try_unmap(TRAMPOLINE.into(), 1, false);
+        for i in 0..NPROC {
+            let _ = uvm.try_unmap(trapframe_va(i).into(), 1, false);
+        }
+        uvm.free(inner.sz);
+    }
+}
 
 pub struct Cpus([UnsafeCell<Cpu>; NCPU]);
 unsafe impl Sync for Cpus {}
@@ -279,14 +319,16 @@ pub struct ProcInner {
 #[derive(Debug)]
 pub struct ProcData {
     pub kstack: KVAddr,                    // Virtual address of kernel stack
-    pub sz: usize,                         // Size of process memory (bytes)
-    pub uvm: Option<Uvm>,                  // User Memory Page Table
+    pub aspace: Option<Arc<AddrSpace>>,    // Shared address space (user pagetable + size)
     pub trapframe: Option<Box<Trapframe>>, // data page for trampoline.rs
+    pub trapframe_va: UVAddr,              // user-VA of this proc's trapframe mapping
     pub context: Context,                  // swtch() here to run process
     pub name: String,                      // Process name (debugging)
+    pub is_thread: bool,                   // created by clone()
+    pub ustack: usize,                     // clone()'s stack base
     pub ofile: [Option<File>; NOFILE],     // Open files
     pub cwd: Option<Inode>,                // Current directory
-    pub mmap_base: usize,                  // top-down allocator, starts at TRAPFRAME
+    pub mmap_base: usize,                  // top-down allocator, starts at user_mem_top(NPROC)
     pub vmas: Vec<Vma>,
 }
 unsafe impl Sync for ProcData {}
@@ -474,10 +516,12 @@ impl Procs {
                         return Err(OutOfMemory);
                     }
 
+                    data.trapframe_va = trapframe_va(p.idx).into();
+
                     // An empty user page table.
                     match p.uvmcreate() {
                         Ok(uvm) => {
-                            data.uvm.replace(uvm);
+                            data.aspace.replace(Arc::new(AddrSpace::new(uvm, 0)));
                         }
                         Err(err) => {
                             p.free(lock);
@@ -529,16 +573,37 @@ impl Proc {
 
     fn free(&self, mut guard: MutexGuard<'_, ProcInner>) {
         let data = self.data_mut();
-        data.trapframe.take();
-        if let Some(mut uvm) = data.uvm.take() {
-            data.munmap_all(&mut uvm);
-            uvm.proc_uvmfree(data.sz);
+        let aspace = data.aspace.as_ref().map(Arc::clone);
+
+        if let Some(aspace) = aspace {
+            let mut inner = aspace.inner.lock();
+
+            // Always unmap this proc/thread's trapframe from the user page table.
+            if let Some(ref mut uvm) = inner.uvm {
+                let _ = uvm.try_unmap(data.trapframe_va, 1, false);
+            }
+
+            // If this is the last owner of the address space, tear down mmaps before
+            // freeing.
+            if !data.is_thread
+                && Arc::strong_count(&aspace) == 1
+                && let Some(mut uvm) = inner.uvm.take()
+            {
+                let oldsz = inner.sz;
+                data.munmap_all(&mut uvm);
+                data.mmap_base = user_mem_top(NPROC);
+                uvm.proc_uvmfree(oldsz);
+                inner.sz = 0;
+            }
         }
-        data.sz = 0;
+        data.trapframe.take();
+        data.aspace.take();
         data.vmas.clear();
-        data.mmap_base = TRAPFRAME;
+        data.mmap_base = user_mem_top(NPROC);
         guard.pid = PId(0);
         data.name.clear();
+        data.is_thread = false;
+        data.ustack = 0;
         guard.chan = 0;
         guard.killed = false;
         guard.xstate = 0;
@@ -569,7 +634,7 @@ impl Proc {
         // map the trapframe page just below the trampoline page, for
         // trampoline.rs
         if let Err(err) = uvm.mappages(
-            UVAddr::from(TRAPFRAME),
+            data.trapframe_va,
             PAddr::from(data.trapframe.as_deref().unwrap() as *const _ as usize),
             PGSIZE,
             PTE_R | PTE_W,
@@ -587,8 +652,9 @@ pub fn either_copyout<T: ?Sized + AsBytes>(dst: VirtAddr, src: &T) -> Result<()>
     match dst {
         VirtAddr::User(addr) => {
             let p = Cpus::myproc().unwrap();
-            let uvm = p.data_mut().uvm.as_mut().unwrap();
-            uvm.copyout(addr.into(), src)
+            let aspace = p.data().aspace.as_ref().unwrap();
+            let mut inner = aspace.inner.lock();
+            inner.uvm.as_mut().unwrap().copyout(addr.into(), src)
         }
         VirtAddr::Kernel(addr) | VirtAddr::Physical(addr) => {
             let src = src.as_bytes();
@@ -605,8 +671,9 @@ pub fn either_copyin<T: ?Sized + AsBytes>(dst: &mut T, src: VirtAddr) -> Result<
     match src {
         VirtAddr::User(addr) => {
             let p = Cpus::myproc().unwrap();
-            let uvm = p.data_mut().uvm.as_mut().unwrap();
-            uvm.copyin(dst, addr.into())
+            let aspace = p.data().aspace.as_ref().unwrap();
+            let mut inner = aspace.inner.lock();
+            inner.uvm.as_mut().unwrap().copyin(dst, addr.into())
         }
         VirtAddr::Kernel(addr) | VirtAddr::Physical(addr) => {
             let dst = dst.as_bytes_mut();
@@ -624,7 +691,9 @@ pub fn user_init(initcode: &'static [u8]) {
     INITPROC.set(p.clone()).unwrap();
 
     let data = p.data_mut();
-    let uvm = data.uvm.as_mut().unwrap();
+    let aspace = data.aspace.as_ref().unwrap();
+    let mut as_inner = aspace.inner.lock();
+    let uvm = as_inner.uvm.as_mut().unwrap();
 
     let elf;
     unsafe {
@@ -688,7 +757,7 @@ pub fn user_init(initcode: &'static [u8]) {
     uvm.clear(From::from(sz - 2 * PGSIZE));
 
     // prepare for the very first "return" from kernel to user.
-    data.sz = sz;
+    as_inner.sz = sz;
     let tf = data.trapframe.as_mut().unwrap();
     tf.epc = elf.e_entry; // user program counter
     tf.sp = UVAddr::from(sz).into_usize(); // user stack pointer
@@ -719,14 +788,16 @@ impl ProcData {
     pub fn new() -> Self {
         Self {
             kstack: KVAddr::from(0),
-            sz: 0,
-            uvm: None,
+            aspace: None,
             trapframe: None,
+            trapframe_va: UVAddr::from(0),
             context: Context::new(),
             name: String::new(),
+            is_thread: false,
+            ustack: 0,
             ofile: array![None; NOFILE],
             cwd: Default::default(),
-            mmap_base: TRAPFRAME,
+            mmap_base: user_mem_top(NPROC),
             vmas: Vec::new(),
         }
     }
@@ -739,7 +810,7 @@ impl Default for ProcData {
 }
 
 impl ProcData {
-    fn alloc_mmap_va(&mut self, len: usize) -> Result<UVAddr> {
+    fn alloc_mmap_va(&mut self, sz: usize, len: usize) -> Result<UVAddr> {
         let len_pg = pgroundup(len);
         if len_pg == 0 {
             return Err(InvalidArgument);
@@ -748,7 +819,7 @@ impl ProcData {
             return Err(NoBufferSpace);
         }
         let base = pgrounddown(self.mmap_base - len_pg);
-        if base < pgroundup(self.sz) {
+        if base < pgroundup(sz) {
             return Err(NoBufferSpace);
         }
         self.mmap_base = base;
@@ -874,9 +945,57 @@ pub fn yielding() {
     sched(guard, &mut p.data_mut().context);
 }
 
+// Kill + reap all child threads of parent.
+
+pub fn reap_threads(parent: &Arc<Proc>) -> Result<()> {
+    let mut parents = PROCS.parents.lock();
+    for c in PROCS.pool.iter() {
+        if parents[c.idx]
+            .as_ref()
+            .is_some_and(|pp| Arc::ptr_eq(pp, parent))
+            && c.data().is_thread
+        {
+            let mut g = c.inner.lock();
+            g.killed = true;
+            if g.state == ProcState::SLEEPING {
+                g.state = ProcState::RUNNABLE;
+            }
+        }
+    }
+
+    loop {
+        let mut havekids = false;
+        for c in PROCS.pool.iter() {
+            if parents[c.idx]
+                .as_ref()
+                .is_some_and(|pp| Arc::ptr_eq(pp, parent))
+                && c.data().is_thread
+            {
+                havekids = true;
+                let c_guard = c.inner.lock();
+                if c_guard.state == ProcState::ZOMBIE {
+                    c.free(c_guard);
+                    parents[c.idx].take();
+                }
+            }
+        }
+        if !havekids {
+            return Ok(());
+        }
+        if parent.inner.lock().killed {
+            return Err(Interrupted);
+        }
+        parents = sleep(Arc::as_ptr(parent) as usize, parents);
+    }
+}
+
 pub fn exit(status: i32) -> ! {
     let p = Cpus::myproc().unwrap();
     assert!(!Arc::ptr_eq(&p, INITPROC.get().unwrap()), "init exiting");
+
+    if !p.data().is_thread {
+        let _ = reap_threads(&p);
+    }
 
     // Close all open files
     let data = p.data_mut();
@@ -963,18 +1082,24 @@ pub fn wakeup(chan: usize) {
 // Sets up child kernel stack to return as if from fork() system call.
 pub fn fork() -> Result<usize> {
     let p = Cpus::myproc().unwrap();
-    let p_data = p.data_mut();
+    let p_data = p.data();
     let (c, c_guard) = PROCS.alloc()?;
     let c_data = c.data_mut();
 
     // Copy user memory from parent to child.
-    let p_uvm = p_data.uvm.as_mut().unwrap();
-    let c_uvm = c_data.uvm.as_mut().unwrap();
-    if let Err(err) = p_uvm.copy(c_uvm, p_data.sz) {
+    let p_aspace = p_data.aspace.as_ref().unwrap();
+    let mut p_as_inner = p_aspace.inner.lock();
+    let p_sz = p_as_inner.sz;
+    let p_uvm = p_as_inner.uvm.as_mut().unwrap();
+
+    let c_aspace = c_data.aspace.as_ref().unwrap();
+    let mut c_as_inner = c_aspace.inner.lock();
+    c_as_inner.sz = p_sz;
+    let c_uvm = c_as_inner.uvm.as_mut().unwrap();
+    if let Err(err) = p_uvm.copy(c_uvm, p_sz) {
         c.free(c_guard);
         return Err(err);
     }
-    c_data.sz = p_data.sz;
 
     // copy saved user registers
     let p_tf = p_data.trapframe.as_ref().unwrap();
@@ -1030,6 +1155,108 @@ pub fn fork() -> Result<usize> {
     Ok(pid.0)
 }
 
+// Create a new thread in the same address space as the caller.
+
+pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize> {
+    let p = Cpus::myproc().unwrap();
+    let p_data = p.data();
+    let stack_base: UVAddr = stack.into();
+    if stack == 0 || !stack_base.is_aligned() {
+        return Err(BadVirtAddr);
+    }
+    let p_aspace = p_data.aspace.as_ref().unwrap();
+    let p_sz = p_aspace.inner.lock().sz;
+    if stack.checked_add(PGSIZE).is_none() || stack + PGSIZE > p_sz {
+        return Err(BadVirtAddr);
+    }
+    let (c, c_guard) = PROCS.alloc()?;
+    let c_data = c.data_mut();
+
+    // Switch child to share parent's address space.
+    let _old = c_data.aspace.replace(Arc::clone(p_aspace));
+
+    // Map child's trapframe into the shared user page table.
+    {
+        let mut as_inner = p_aspace.inner.lock();
+        let uvm = as_inner.uvm.as_mut().unwrap();
+        uvm.mappages(
+            c_data.trapframe_va,
+            PAddr::from(c_data.trapframe.as_deref().unwrap() as *const _ as usize),
+            PGSIZE,
+            PTE_R | PTE_W,
+        )?;
+    }
+
+    // Start thread at fcn(arg1, arg2).
+    let p_tf = p_data.trapframe.as_ref().unwrap();
+    let c_tf = c_data.trapframe.as_mut().unwrap();
+    c_tf.clone_from(p_tf);
+    c_tf.epc = fcn;
+    c_tf.sp = stack + PGSIZE;
+    c_tf.a0 = arg1;
+    c_tf.a1 = arg2;
+    c_data.is_thread = true;
+    c_data.ustack = stack;
+    c_data.ofile.clone_from_slice(&p_data.ofile);
+    c_data.cwd = p_data.cwd.clone();
+    c_data.name.push_str(&p_data.name);
+
+    let pid = c_guard.pid;
+    let c_inner = Mutex::unlock(c_guard);
+    {
+        let mut parents = PROCS.parents.lock();
+        parents[c.idx] = Some(Arc::clone(&p));
+    }
+    c_inner.lock().state = ProcState::RUNNABLE;
+
+    Ok(pid.0)
+}
+
+// Wait for a child thread to exit; returns child's pid and writes its stack
+
+// base into addr.
+
+pub fn join(addr: UVAddr) -> Result<usize> {
+    let pid;
+    let mut havekids;
+    let p = Cpus::myproc().unwrap();
+    let mut parents = PROCS.parents.lock();
+
+    loop {
+        havekids = false;
+        for c in PROCS.pool.iter() {
+            match parents[c.idx] {
+                Some(ref pp) if Arc::ptr_eq(pp, &p) => {
+                    if !c.data().is_thread {
+                        continue;
+                    }
+                    let c_guard = c.inner.lock();
+                    havekids = true;
+                    if c_guard.state == ProcState::ZOMBIE {
+                        pid = c_guard.pid.0;
+                        let stack = c.data().ustack;
+                        {
+                            let aspace = p.data().aspace.as_ref().unwrap();
+                            let mut as_inner = aspace.inner.lock();
+                            as_inner.uvm.as_mut().unwrap().copyout(addr, &stack)?;
+                        }
+                        c.free(c_guard);
+                        parents[c.idx].take();
+                        return Ok(pid);
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        if !havekids || p.inner.lock().killed {
+            break Err(NoChildProcesses);
+        }
+
+        parents = sleep(Arc::as_ptr(&p) as usize, parents);
+    }
+}
+
 // Kill the process with the given pid.
 // The victim won't exit until it tries to return
 // to user space (see usertrap in trap.rs)
@@ -1063,13 +1290,18 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
         for c in PROCS.pool.iter() {
             match parents[c.idx] {
                 Some(ref pp) if Arc::ptr_eq(pp, &p) => {
+                    if c.data().is_thread {
+                        continue;
+                    }
                     // make sure the child isn't still in exit() or swtch().
                     let c_guard = c.inner.lock();
                     havekids = true;
                     if c_guard.state == ProcState::ZOMBIE {
                         // Found one.
                         pid = c_guard.pid.0;
-                        p.data_mut()
+                        let aspace = p.data().aspace.as_ref().unwrap();
+                        let mut as_inner = aspace.inner.lock();
+                        as_inner
                             .uvm
                             .as_mut()
                             .unwrap()
@@ -1095,14 +1327,16 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
 pub fn grow(n: isize) -> Result<()> {
     use core::cmp::Ordering;
     let p = Cpus::myproc().unwrap();
-    let data = p.data_mut();
-    let mut sz = data.sz;
-    let uvm = data.uvm.as_mut().unwrap();
+    let mmap_base = p.data().mmap_base;
+    let aspace = p.data().aspace.as_ref().unwrap();
+    let mut inner = aspace.inner.lock();
+    let mut sz = inner.sz;
+    let uvm = inner.uvm.as_mut().unwrap();
 
     match n.cmp(&0) {
         Ordering::Greater => {
             let newsz = sz + n as usize;
-            if newsz >= data.mmap_base {
+            if newsz >= mmap_base {
                 return Err(NoBufferSpace);
             }
             sz = uvm.alloc(sz, newsz, PTE_W)?;
@@ -1110,7 +1344,7 @@ pub fn grow(n: isize) -> Result<()> {
         Ordering::Less => sz = uvm.dealloc(sz, (sz as isize + n) as usize),
         _ => (),
     }
-    data.sz = sz;
+    inner.sz = sz;
     Ok(())
 }
 
@@ -1172,7 +1406,11 @@ pub fn mmap(
         Some(f)
     };
 
-    let start = data.alloc_mmap_va(len)?;
+    let sz = {
+        let aspace = data.aspace.as_ref().unwrap();
+        aspace.inner.lock().sz
+    };
+    let start = data.alloc_mmap_va(sz, len)?;
 
     data.vmas.push(Vma {
         start,
@@ -1193,7 +1431,9 @@ pub fn munmap(addr: usize, len: usize) -> Result<()> {
 
     let p = Cpus::myproc().unwrap();
     let data = p.data_mut();
-    let uvm = data.uvm.as_mut().unwrap();
+    let aspace = data.aspace.as_ref().unwrap();
+    let mut as_inner = aspace.inner.lock();
+    let uvm = as_inner.uvm.as_mut().unwrap();
 
     let start: UVAddr = addr.into();
     let len_pg = pgroundup(len);
@@ -1308,16 +1548,19 @@ pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()>
     let mut va: UVAddr = fault_addr.into();
     va.rounddown();
 
-    let vmas = data.vmas.clone();
-    let idx = vmas
+    let idx = data
+        .vmas
         .iter()
         .position(|v| v.contains_pg(va))
         .ok_or(BadVirtAddr)?;
-    let v = vmas[idx].clone();
 
-    let mut uvm = data.uvm.take().unwrap();
+    let v = data.vmas[idx].clone();
 
-    let res = (|| -> Result<()> {
+    let aspace = data.aspace.as_ref().unwrap();
+    let mut as_inner = aspace.inner.lock();
+    let uvm = as_inner.uvm.as_mut().unwrap();
+
+    (|| -> Result<()> {
         // permission check based on fault type
         match cause {
             Exception::LoadPageFault if (v.prot & PROT_READ) == 0 => return Err(PermissionDenied),
@@ -1364,8 +1607,5 @@ pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()>
         crate::kalloc::page_ref_init(mem as usize);
 
         Ok(())
-    })();
-
-    data.uvm = Some(uvm);
-    res
+    })()
 }

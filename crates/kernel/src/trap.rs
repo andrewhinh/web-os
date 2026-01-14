@@ -1,3 +1,5 @@
+use core::arch::asm;
+
 use crate::{
     kernelvec::kernelvec,
     memlayout::{STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ},
@@ -84,12 +86,19 @@ pub extern "C" fn usertrap() -> ! {
             let va = UVAddr::from(fault);
 
             // cow for regular user mem
-            if va.into_usize() < data.sz {
-                let uvm = data.uvm.as_mut().unwrap();
-                if uvm.resolve_cow(va).is_err() {
-                    p.inner.lock().killed = true;
+            let mut did_cow = false;
+            {
+                let aspace = data.aspace.as_ref().unwrap();
+                let mut as_inner = aspace.inner.lock();
+                if va.into_usize() < as_inner.sz {
+                    let uvm = as_inner.uvm.as_mut().unwrap();
+                    if uvm.resolve_cow(va).is_err() {
+                        p.inner.lock().killed = true;
+                    }
+                    did_cow = true;
                 }
-            } else {
+            }
+            if !did_cow {
                 // lazy mmap
                 intr_on();
                 if proc::handle_user_page_fault(fault, Exception::StorePageFault).is_err() {
@@ -167,6 +176,11 @@ pub unsafe extern "C" fn usertrap_ret() -> ! {
     tf.kernel_trap = usertrap as *const () as usize;
     tf.kernel_hartid = unsafe { Cpus::cpu_id() };
 
+    // tell trampoline where this thread's trapframe lives
+    unsafe {
+        asm!("csrw sscratch, {}", in(reg) data.trapframe_va.into_usize());
+    }
+
     // set up the registers that trampoline.rs's sret will use
     // to get to user space.
 
@@ -180,7 +194,16 @@ pub unsafe extern "C" fn usertrap_ret() -> ! {
     sepc::write(tf.epc);
 
     // tell trampoline.rs the user page table to switch to.
-    let satp = data.uvm.as_ref().unwrap().as_satp();
+    let satp = data
+        .aspace
+        .as_ref()
+        .unwrap()
+        .inner
+        .lock()
+        .uvm
+        .as_ref()
+        .unwrap()
+        .as_satp();
 
     // jump to trampoline.rs at the top of memory, which
     // switches to the user page table, restores user registers,

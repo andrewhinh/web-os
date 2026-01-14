@@ -10,8 +10,6 @@
 
 use core::arch::naked_asm;
 
-use crate::memlayout::TRAPFRAME;
-
 unsafe extern "C" {
     pub fn trampoline();
 }
@@ -27,14 +25,11 @@ pub unsafe extern "C" fn uservec() -> ! {
     // user page table.
 
     naked_asm!(
-        // save user a0 in sscratch so
-        // a0 can be used to get at TRAPFRAME
-        "csrw sscratch, a0",
-        // each process has a separate p.trapframe memory area,
-        // but it's mapped to the same virtual address
-        // (TRAPFRAME) in every process's user page table.
-        "li a0, {tf}",
-        // save the user registers in TRAPFRAME
+        // swap user a0 with sscratch since
+        // kernel sets sscratch to the current thread's trapframe VA
+        // before returning to user.
+        "csrrw a0, sscratch, a0",
+        // save user registers in the current thread's trapframe
         "sd ra, 40(a0)",
         "sd sp, 48(a0)",
         "sd gp, 56(a0)",
@@ -85,7 +80,6 @@ pub unsafe extern "C" fn uservec() -> ! {
         "sfence.vma zero, zero",
         // jump to usertrap(), which does not return
         "jr t0",
-        tf = const TRAPFRAME,
     );
 }
 
@@ -105,10 +99,8 @@ pub unsafe extern "C" fn userret(pagetable: usize) -> ! {
         "sfence.vma zero, zero",
         "csrw satp, a0",
         "sfence.vma zero, zero",
-        // put the saved user a0 in sscratch, so we
-        // can swap it with our a0 (TRAPFRAME)
-        // set TRAPFRAME to a0
-        "li a0, {tf}",
+        // load trapframe VA for this thread from sscratch.
+        "csrr a0, sscratch",
         // restore all but a0 from TRAPFRAME
         "ld ra, 40(a0)",
         "ld sp, 48(a0)",
@@ -145,6 +137,5 @@ pub unsafe extern "C" fn userret(pagetable: usize) -> ! {
         // return to user mode and user pc,
         // usertrap_ret() set up sstatus and sepc.
         "sret",
-        tf = const TRAPFRAME,
     );
 }
