@@ -28,14 +28,14 @@ fn main() {
         child();
     }
 
-    let mut cmd = Command::new("/bin/pdual_demo");
+    let mut cmd = Command::new("/bin/test_pdual");
     cmd.arg("--child");
     cmd.stdout(Stdio::MakePipe).stderr(Stdio::MakePipe);
 
     let out = match cmd.output() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("pdual_demo: spawn/output failed: {}", e);
+            eprintln!("test_pdual: spawn/output failed: {}", e);
             return;
         }
     };

@@ -378,12 +378,21 @@ impl<'a> Command<'a> {
                     .map(Path::new)
                     .collect::<Vec<_>>()
             });
+        let mut tried_path = false;
         if let Some(paths) = paths {
             for program_path in paths.iter().map(|p| p.join(self.program)) {
                 if program_path.exists() {
+                    tried_path = true;
                     let _ = sys::exec(program_path.to_str(), &self.argv, envp)
                         .map(|_| Err::<!, kernel::error::Error>(sys::Error::Uncategorized))?;
                 }
+            }
+        }
+        if !tried_path && !self.program.contains('/') {
+            let program_path = Path::new("/bin").join(self.program);
+            if program_path.exists() {
+                let _ = sys::exec(program_path.to_str(), &self.argv, envp)
+                    .map(|_| Err::<!, kernel::error::Error>(sys::Error::Uncategorized))?;
             }
         }
         match sys::exec(self.program, &self.argv, envp) {

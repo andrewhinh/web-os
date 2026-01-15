@@ -16,7 +16,7 @@ fn main() {
 }
 
 fn anon_private_demo() {
-    println!("mmapdemo: anon private");
+    println!("test_mmap: anon private");
 
     let before = sys::freepages().unwrap_or(0);
     let len = 2 * PGSIZE;
@@ -24,7 +24,7 @@ fn anon_private_demo() {
     let addr = match sys::mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, 0, 0) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("mmapdemo: mmap anon failed err={}", e);
+            eprintln!("test_mmap: mmap anon failed err={}", e);
             return;
         }
     };
@@ -39,26 +39,26 @@ fn anon_private_demo() {
 
         let a = *p.add(0);
         let b = *p.add(PGSIZE);
-        println!("mmapdemo: readback a={:#x} b={:#x}", a, b);
+        println!("test_mmap: readback a={:#x} b={:#x}", a, b);
     }
 
     let after_touch = sys::freepages().unwrap_or(0);
     if let Err(e) = sys::munmap(addr, len) {
-        eprintln!("mmapdemo: munmap anon failed err={}", e);
+        eprintln!("test_mmap: munmap anon failed err={}", e);
         return;
     }
     let after_unmap = sys::freepages().unwrap_or(0);
 
     println!(
-        "mmapdemo: freepages before={} after_mmap={} after_touch={} after_unmap={}",
+        "test_mmap: freepages before={} after_mmap={} after_touch={} after_unmap={}",
         before, after_mmap, after_touch, after_unmap
     );
 }
 
 fn file_shared_demo() {
-    println!("mmapdemo: file shared writeback");
+    println!("test_mmap: file shared writeback");
 
-    let path = "/mmapdemo.txt";
+    let path = "/test_mmap.txt";
     let mut f = match OpenOptions::new()
         .read(true)
         .write(true)
@@ -68,7 +68,7 @@ fn file_shared_demo() {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("mmapdemo: open failed path={} err={}", path, e);
+            eprintln!("test_mmap: open failed path={} err={}", path, e);
             return;
         }
     };
@@ -79,7 +79,7 @@ fn file_shared_demo() {
     let addr = match sys::mmap(0, PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("mmapdemo: mmap file failed err={}", e);
+            eprintln!("test_mmap: mmap file failed err={}", e);
             return;
         }
     };
@@ -90,11 +90,11 @@ fn file_shared_demo() {
         *p.add(1) = b'Y';
         let x0 = *p.add(0);
         let x1 = *p.add(1);
-        println!("mmapdemo: mapped bytes {:?} {:?}", x0 as char, x1 as char);
+        println!("test_mmap: mapped bytes {:?} {:?}", x0 as char, x1 as char);
     }
 
     if let Err(e) = sys::munmap(addr, PGSIZE) {
-        eprintln!("mmapdemo: munmap file failed err={}", e);
+        eprintln!("test_mmap: munmap file failed err={}", e);
         return;
     }
 
@@ -103,7 +103,7 @@ fn file_shared_demo() {
     let mut f2 = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("mmapdemo: reopen failed err={}", e);
+            eprintln!("test_mmap: reopen failed err={}", e);
             return;
         }
     };
@@ -111,12 +111,12 @@ fn file_shared_demo() {
     let n = match f2.read(&mut buf) {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("mmapdemo: read failed err={}", e);
+            eprintln!("test_mmap: read failed err={}", e);
             return;
         }
     };
 
-    print_bytes("mmapdemo: file head=", &buf[..n]);
+    print_bytes("test_mmap: file head=", &buf[..n]);
     println!("");
 }
 

@@ -10,7 +10,7 @@ use crate::array;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::error::{Error::*, Result};
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::fcntl::{FcntlCmd, OMode};
+use crate::fcntl::{FcntlCmd, OMode, fd, omode};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::fs::{BSIZE, IData, Inode, Path, create};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -48,6 +48,7 @@ pub struct File {
     writable: bool,
     cloexec: bool,
     nonblock: bool,
+    append: bool,
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -121,7 +122,7 @@ impl FNod {
         Ok(r)
     }
 
-    fn write(&self, src: VirtAddr, n: usize) -> Result<usize> {
+    fn write(&self, src: VirtAddr, n: usize, append: bool) -> Result<usize> {
         // write a few blocks at a time to avoid exceeding the maximum
         // log transaction size, including i-node, indirect block,
         // allocation blocks, and 2 blocks of slop for non-aligned
@@ -141,6 +142,9 @@ impl FNod {
             {
                 let mut guard = self.ip.lock();
                 let off = unsafe { &mut *self.off.get() };
+                if append {
+                    *off = guard.size();
+                }
                 ret = guard.write(src, *off, n1);
                 match ret {
                     Ok(r) => {
@@ -171,10 +175,10 @@ impl VFile {
         }
     }
 
-    fn write(&self, src: VirtAddr, n: usize) -> Result<usize> {
+    fn write(&self, src: VirtAddr, n: usize, append: bool) -> Result<usize> {
         match self {
             VFile::Device(d) => d.write(src, n),
-            VFile::Inode(f) => f.write(src, n),
+            VFile::Inode(f) => f.write(src, n, append),
             VFile::Pipe(p) => p.write(src, n),
             _ => panic!("file write"),
         }
@@ -217,7 +221,7 @@ impl File {
         }
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
-            _ => self.f.as_ref().unwrap().write(src, n),
+            _ => self.f.as_ref().unwrap().write(src, n, self.append),
         }
     }
 
@@ -229,9 +233,48 @@ impl File {
         self.cloexec = false;
     }
 
-    pub fn do_fcntl(&mut self, cmd: FcntlCmd) -> Result<usize> {
+    fn access_mode_bits(&self) -> usize {
+        match (self.readable, self.writable) {
+            (true, false) => omode::RDONLY,
+            (false, true) => omode::WRONLY,
+            (true, true) => omode::RDWR,
+            (false, false) => omode::RDONLY,
+        }
+    }
+
+    fn status_flags(&self) -> usize {
+        let mut flags = self.access_mode_bits();
+        if self.append {
+            flags |= omode::APPEND;
+        }
+        if self.nonblock {
+            flags |= omode::NONBLOCK;
+        }
+        flags
+    }
+
+    fn set_status_flags(&mut self, flags: usize) -> Result<()> {
+        let allowed = omode::APPEND | omode::NONBLOCK | omode::WRONLY | omode::RDWR;
+        if flags & !allowed != 0 {
+            return Err(InvalidArgument);
+        }
+        self.append = flags & omode::APPEND != 0;
+        self.nonblock = flags & omode::NONBLOCK != 0;
+        Ok(())
+    }
+
+    pub fn do_fcntl(&mut self, cmd: FcntlCmd, arg: usize) -> Result<usize> {
         use FcntlCmd::*;
         match cmd {
+            GetFl => return Ok(self.status_flags()),
+            SetFl => self.set_status_flags(arg)?,
+            GetFd => return Ok(if self.cloexec { fd::CLOEXEC } else { 0 }),
+            SetFd => {
+                if arg & !fd::CLOEXEC != 0 {
+                    return Err(InvalidArgument);
+                }
+                self.cloexec = arg & fd::CLOEXEC != 0;
+            }
             SetCloexec => self.cloexec = true,
             SetNonblock => self.nonblock = true,
             ClearNonblock => self.nonblock = false,
@@ -369,7 +412,8 @@ impl FTable {
             readable: opts.is_read(),
             writable: opts.is_write(),
             cloexec: opts.is_cloexec(),
-            nonblock: false,
+            nonblock: opts.is_nonblock(),
+            append: opts.is_append(),
         })
     }
 }

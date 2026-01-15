@@ -7,7 +7,7 @@ use crate::sys::{
     self,
     Error::*,
     defs::AsBytes,
-    fcntl::{FcntlCmd, omode},
+    fcntl::{FcntlCmd, fd, omode},
     fs::DirEnt,
     stat::FileType,
     stat::Stat,
@@ -64,7 +64,7 @@ impl File {
     }
 
     pub fn set_cloexec(&mut self) -> sys::Result<usize> {
-        sys::fcntl(self.0, FcntlCmd::SetCloexec)
+        sys::fcntl(self.0, FcntlCmd::SetFd, fd::CLOEXEC)
     }
 
     pub fn set_nonblock(&mut self) -> sys::Result<usize> {

@@ -125,7 +125,7 @@ impl SysCalls {
         (Fn::U(Self::mkdir), "(dir: &str)"), // Create a new directory.
         (Fn::U(Self::close), "(fd: usize)"), // Release open file fd.
         (Fn::I(Self::dup2), "(src: usize, dst: usize)"), //
-        (Fn::I(Self::fcntl), "(fd: usize, cmd: FcntlCmd)"), //
+        (Fn::I(Self::fcntl), "(fd: usize, cmd: FcntlCmd, arg: usize)"), //
         (Fn::I(Self::nonblock), "(fd: usize, on: usize)"), //
         (Fn::I(Self::freepages), "()"),      //
         (
@@ -829,8 +829,9 @@ impl SysCalls {
 
             let (f, _) = File::from_arg(0, &mut _fd)?;
             let cmd = FcntlCmd::from_usize(argraw(1));
+            let arg = argraw(2);
 
-            f.do_fcntl(cmd)
+            f.do_fcntl(cmd, arg)
         }
     }
 
@@ -847,7 +848,7 @@ impl SysCalls {
             } else {
                 FcntlCmd::ClearNonblock
             };
-            f.do_fcntl(cmd)
+            f.do_fcntl(cmd, 0)
         }
     }
 }

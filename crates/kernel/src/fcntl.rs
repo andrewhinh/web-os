@@ -6,6 +6,11 @@ pub mod omode {
     pub const TRUNC: usize = 0x400;
     pub const APPEND: usize = 0x800;
     pub const CLOEXEC: usize = 0x1000;
+    pub const NONBLOCK: usize = 0x2000;
+}
+
+pub mod fd {
+    pub const CLOEXEC: usize = 0x1;
 }
 
 pub struct OMode {
@@ -15,6 +20,7 @@ pub struct OMode {
     create: bool,
     append: bool,
     cloexec: bool,
+    nonblock: bool,
 }
 
 impl Default for OMode {
@@ -32,6 +38,7 @@ impl OMode {
             create: false,
             append: false,
             cloexec: false,
+            nonblock: false,
         }
     }
 
@@ -55,6 +62,11 @@ impl OMode {
         self
     }
 
+    pub fn nonblock(&mut self, nonblock: bool) -> &mut Self {
+        self.nonblock = nonblock;
+        self
+    }
+
     fn truncate(&mut self, truncate: bool) -> &mut Self {
         self.truncate = truncate;
         self
@@ -72,7 +84,8 @@ impl OMode {
             .create(bits & omode::CREATE != 0)
             .truncate(bits & omode::TRUNC != 0)
             .append(bits & omode::APPEND != 0)
-            .cloexec(bits & omode::CLOEXEC != 0);
+            .cloexec(bits & omode::CLOEXEC != 0)
+            .nonblock(bits & omode::NONBLOCK != 0);
         mode
     }
 
@@ -103,22 +116,34 @@ impl OMode {
     pub fn is_append(&self) -> bool {
         self.append
     }
+
+    pub fn is_nonblock(&self) -> bool {
+        self.nonblock
+    }
 }
 
 #[repr(usize)]
 pub enum FcntlCmd {
-    SetCloexec = 1,
-    SetNonblock = 2,
-    ClearNonblock = 3,
+    GetFl = 1,
+    SetFl = 2,
+    GetFd = 3,
+    SetFd = 4,
+    SetCloexec = 5,
+    SetNonblock = 6,
+    ClearNonblock = 7,
     Invalid,
 }
 
 impl FcntlCmd {
     pub fn from_usize(bits: usize) -> Self {
         match bits {
-            1 => Self::SetCloexec,
-            2 => Self::SetNonblock,
-            3 => Self::ClearNonblock,
+            1 => Self::GetFl,
+            2 => Self::SetFl,
+            3 => Self::GetFd,
+            4 => Self::SetFd,
+            5 => Self::SetCloexec,
+            6 => Self::SetNonblock,
+            7 => Self::ClearNonblock,
             _ => Self::Invalid,
         }
     }

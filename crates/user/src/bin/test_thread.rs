@@ -24,10 +24,10 @@ fn main() {
     }
 
     let final_count = *COUNT.lock();
-    println!("threadtest: count={}", final_count);
+    println!("test_thread: count={}", final_count);
     if final_count != nthreads * iters {
-        println!("threadtest: FAIL");
+        println!("test_thread: FAIL");
         sys::exit(1);
     }
-    println!("threadtest: OK");
+    println!("test_thread: OK");
 }

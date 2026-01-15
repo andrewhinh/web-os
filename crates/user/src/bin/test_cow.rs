@@ -9,7 +9,7 @@ fn main() {
     let pages = PAGES;
     let bytes = pages * PGSIZE;
     let Ok(base) = sys::sbrk(bytes) else {
-        eprintln!("cow: sbrk failed ({} pages)", pages);
+        eprintln!("test_cow: sbrk failed ({} pages)", pages);
         return;
     };
     let mem = base as *mut u8;
@@ -18,14 +18,14 @@ fn main() {
     let mut p2c = [0usize; 2];
     let mut c2p = [0usize; 2];
     if sys::pipe(&mut p2c).is_err() || sys::pipe(&mut c2p).is_err() {
-        eprintln!("cow: pipe failed");
+        eprintln!("test_cow: pipe failed");
         return;
     }
     let (p2c_r, p2c_w) = (p2c[0], p2c[1]);
     let (c2p_r, c2p_w) = (c2p[0], c2p[1]);
 
     let Ok(f_pre_fork) = sys::freepages() else {
-        eprintln!("cow: freepages() failed");
+        eprintln!("test_cow: freepages() failed");
         return;
     };
 
@@ -40,7 +40,7 @@ fn main() {
             let _ = sys::close(c2p_w);
 
             let Ok(f_post_fork) = sys::freepages() else {
-                eprintln!("cow: freepages() failed");
+                eprintln!("test_cow: freepages() failed");
                 return;
             };
 
@@ -49,7 +49,7 @@ fn main() {
             let _ = sys::read(c2p_r, &mut ack);
 
             let Ok(f_post_write) = sys::freepages() else {
-                eprintln!("cow: freepages() failed");
+                eprintln!("test_cow: freepages() failed");
                 return;
             };
 
@@ -62,25 +62,28 @@ fn main() {
 
             let parent0 = unsafe { *mem.add(0) };
             if parent0 != 1 {
-                eprintln!("cow: FAIL parent changed got={} want=1", parent0);
+                eprintln!("test_cow: FAIL parent changed got={} want=1", parent0);
                 return;
             }
 
             if delta_fork >= pages / 2 {
                 println!(
-                    "cow: FAIL no COW (fork copied) dfork={} dwrite={}",
+                    "test_cow: FAIL no COW (fork copied) dfork={} dwrite={}",
                     delta_fork, delta_write
                 );
             } else if delta_write >= 1 {
-                println!("cow: PASS COW dfork={} dwrite={}", delta_fork, delta_write);
+                println!(
+                    "test_cow: PASS COW dfork={} dwrite={}",
+                    delta_fork, delta_write
+                );
             } else {
                 eprintln!(
-                    "cow: INCONCLUSIVE dfork={} dwrite={}",
+                    "test_cow: INCONCLUSIVE dfork={} dwrite={}",
                     delta_fork, delta_write
                 );
             }
         }
-        Err(e) => eprintln!("cow: fork failed err={}", e),
+        Err(e) => eprintln!("test_cow: fork failed err={}", e),
     }
 }
 

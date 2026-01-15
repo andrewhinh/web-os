@@ -95,33 +95,38 @@ path = "src/bin/touch.rs"
 test = false
 
 [[bin]]
-name = "_pdual_demo"
-path = "src/bin/pdual_demo.rs"
+name = "_test_pdual"
+path = "src/bin/test_pdual.rs"
 test = false
 
 [[bin]]
-name = "_cow"
-path = "src/bin/cow.rs"
+name = "_test_cow"
+path = "src/bin/test_cow.rs"
 test = false
 
 [[bin]]
-name = "_mmapdemo"
-path = "src/bin/mmapdemo.rs"
+name = "_test_mmap"
+path = "src/bin/test_mmap.rs"
 test = false
 
 [[bin]]
-name = "_threadtest"
-path = "src/bin/threadtest.rs"
+name = "_test_thread"
+path = "src/bin/test_thread.rs"
 test = false
 
 [[bin]]
-name = "_aplicdemo"
-path = "src/bin/aplicdemo.rs"
+name = "_test_aplic"
+path = "src/bin/test_aplic.rs"
 test = false
 
 [[bin]]
-name = "_ktaskdemo"
-path = "src/bin/ktaskdemo.rs"
+name = "_test_ktask"
+path = "src/bin/test_ktask.rs"
+test = false
+
+[[bin]]
+name = "_test_fcntl"
+path = "src/bin/test_fcntl.rs"
 test = false
 
 [dependencies]
