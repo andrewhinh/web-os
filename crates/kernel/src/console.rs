@@ -166,6 +166,11 @@ pub fn init() {
     DEVSW.set(Major::Console, &CONS).unwrap();
 }
 
+pub fn readable() -> bool {
+    let guard = CONS.lock();
+    guard.r != guard.w
+}
+
 // send one character to the uart.
 // called by printf, and to echo input characters,
 // but not from write().

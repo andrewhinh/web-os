@@ -8,6 +8,8 @@ use core::ops::Deref;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::array;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::console;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::error::{Error::*, Result};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::fcntl::{FcntlCmd, OMode, fd, omode};
@@ -19,6 +21,8 @@ use crate::log::LOG;
 use crate::param::{MAXOPBLOCKS, NDEV, NFILE};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::pipe::Pipe;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::poll;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::proc::either_copyout;
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -210,6 +214,12 @@ impl File {
         }
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Pipe(p) if self.nonblock => p.read_nonblock(dst, n),
+            VFile::Device(d) if self.nonblock && d.major() == Major::Console => {
+                if !console::readable() {
+                    return Err(WouldBlock);
+                }
+                d.read(dst, n)
+            }
             _ => self.f.as_ref().unwrap().read(dst, n),
         }
     }
@@ -223,6 +233,50 @@ impl File {
             VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
             _ => self.f.as_ref().unwrap().write(src, n, self.append),
         }
+    }
+
+    pub fn poll(&self, events: usize) -> usize {
+        let mut revents = 0;
+        match self.f.as_ref().unwrap().as_ref() {
+            VFile::Pipe(p) => {
+                if self.readable && events & poll::IN != 0 && p.poll_readable().unwrap_or(false) {
+                    revents |= poll::IN;
+                }
+                if self.writable && events & poll::OUT != 0 && p.poll_writable().unwrap_or(false) {
+                    revents |= poll::OUT;
+                }
+                if self.readable && p.poll_read_hup().unwrap_or(false) {
+                    revents |= poll::HUP;
+                }
+                if self.writable && p.poll_write_hup().unwrap_or(false) {
+                    revents |= poll::HUP;
+                }
+            }
+            VFile::Device(d) => {
+                if self.readable && events & poll::IN != 0 {
+                    let ready = match d.major() {
+                        Major::Console => console::readable(),
+                        _ => true,
+                    };
+                    if ready {
+                        revents |= poll::IN;
+                    }
+                }
+                if self.writable && events & poll::OUT != 0 {
+                    revents |= poll::OUT;
+                }
+            }
+            VFile::Inode(_) => {
+                if self.readable && events & poll::IN != 0 {
+                    revents |= poll::IN;
+                }
+                if self.writable && events & poll::OUT != 0 {
+                    revents |= poll::OUT;
+                }
+            }
+            VFile::None => {}
+        }
+        revents
     }
 
     pub fn is_cloexec(&self) -> bool {

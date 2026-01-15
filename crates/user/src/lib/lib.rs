@@ -13,6 +13,7 @@ pub mod sys {
     pub use kernel::fcntl;
     pub use kernel::file::Major;
     pub use kernel::fs;
+    pub use kernel::poll;
     pub use kernel::stat;
     pub use kernel::sync;
     use stat::Stat;

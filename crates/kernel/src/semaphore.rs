@@ -48,6 +48,14 @@ impl Semaphore {
         Ok(true)
     }
 
+    pub fn can_wait(&self) -> Result<bool> {
+        let cnt = self.mutex.lock();
+        if *cnt == -1 {
+            return Err(InvalidArgument);
+        }
+        Ok(*cnt < self.max)
+    }
+
     pub fn post(&self) {
         let mut cnt = self.mutex.lock();
         assert!(*cnt > 0);

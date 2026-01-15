@@ -34,6 +34,7 @@ pub mod mpmc;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod null;
 pub mod param;
+pub mod poll;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod proc;
 #[cfg(all(target_os = "none", feature = "kernel"))]

@@ -129,6 +129,11 @@ name = "_test_fcntl"
 path = "src/bin/test_fcntl.rs"
 test = false
 
+[[bin]]
+name = "_test_poll"
+path = "src/bin/test_poll.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

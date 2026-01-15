@@ -48,6 +48,14 @@ impl<T: Send + Debug> SyncSender<T> {
         self.cond.notify_all();
         Ok(())
     }
+
+    pub fn can_send(&self) -> Result<bool> {
+        self.sem.can_wait()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.rcnt.load(Ordering::Relaxed) == 0
+    }
 }
 
 #[derive(Debug)]
@@ -100,6 +108,14 @@ impl<T: Debug> Receiver<T> {
         } else {
             Err(NotConnected)
         }
+    }
+
+    pub fn has_data(&self) -> bool {
+        !self.buf.lock().is_empty()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.scnt.load(Ordering::Relaxed) == 0
     }
 }
 

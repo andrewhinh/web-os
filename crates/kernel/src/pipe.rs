@@ -108,4 +108,33 @@ impl Pipe {
         }
         Ok(i)
     }
+
+    pub fn poll_readable(&self) -> Result<bool> {
+        let rx = self.rx.as_ref().ok_or(BrokenPipe)?;
+        if rx.has_data() {
+            return Ok(true);
+        }
+        Ok(rx.is_closed())
+    }
+
+    pub fn poll_writable(&self) -> Result<bool> {
+        let tx = self.tx.as_ref().ok_or(BrokenPipe)?;
+        if tx.is_closed() {
+            return Ok(false);
+        }
+        match tx.can_send() {
+            Ok(can_send) => Ok(can_send),
+            Err(_) => Ok(false),
+        }
+    }
+
+    pub fn poll_read_hup(&self) -> Result<bool> {
+        let rx = self.rx.as_ref().ok_or(BrokenPipe)?;
+        Ok(rx.is_closed())
+    }
+
+    pub fn poll_write_hup(&self) -> Result<bool> {
+        let tx = self.tx.as_ref().ok_or(BrokenPipe)?;
+        Ok(tx.is_closed())
+    }
 }

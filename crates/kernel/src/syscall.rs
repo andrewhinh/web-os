@@ -1,5 +1,7 @@
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use alloc::string::{String, ToString};
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use alloc::vec::Vec;
 use core::mem::variant_count;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use core::mem::{size_of, size_of_val};
@@ -18,8 +20,9 @@ use crate::{
     file::{FTABLE, FType, File},
     fs::{self, Path},
     log::LOG,
-    param::{MAXARG, MAXPATH},
+    param::{MAXARG, MAXPATH, NOFILE},
     pipe::Pipe,
+    poll,
     proc::*,
     riscv::PGSIZE,
     stat::FileType,
@@ -62,6 +65,8 @@ pub enum SysCalls {
     Join = 29,
     ExtIrqCount = 30,
     KTaskPolls = 31,
+    Poll = 32,
+    Select = 33,
     Invalid = 0,
 }
 
@@ -140,6 +145,14 @@ impl SysCalls {
         (Fn::I(Self::join), "(stack: &mut usize)"),
         (Fn::I(Self::ext_irq_count), "()"),
         (Fn::I(Self::ktaskpolls), "()"),
+        (
+            Fn::I(Self::poll),
+            "(fds: &mut [poll::PollFd], timeout: isize)",
+        ),
+        (
+            Fn::I(Self::select),
+            "(fds: &mut [poll::PollFd], timeout: isize)",
+        ),
     ];
 
     pub fn invalid() -> ! {
@@ -220,6 +233,26 @@ fn fetch_slice<T: AsBytes>(slice_info: Slice, buf: &mut [T]) -> Result<Option<us
         either_copyin(&mut buf[..sbinfo.len], sbinfo.ptr.into())?;
     }
     Ok(Some(sbinfo.len))
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+fn poll_check(fds: &mut [poll::PollFd]) -> Result<usize> {
+    let p_data = Cpus::myproc().unwrap().data();
+    let mut ready = 0;
+    for fd in fds.iter_mut() {
+        fd.revents = 0;
+        let Some(file) = p_data.ofile.get(fd.fd).and_then(|f| f.as_ref()) else {
+            fd.revents = poll::NVAL;
+            ready += 1;
+            continue;
+        };
+        let revents = file.poll(fd.events);
+        fd.revents = revents;
+        if revents != 0 {
+            ready += 1;
+        }
+    }
+    Ok(ready)
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -851,6 +884,77 @@ impl SysCalls {
             f.do_fcntl(cmd, 0)
         }
     }
+
+    pub fn poll() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut sbinfo: SBInfo = Default::default();
+            let sbinfo = SBInfo::from_arg(0, &mut sbinfo)?;
+            let timeout = argraw(1) as isize;
+
+            if sbinfo.len > NOFILE {
+                return Err(InvalidArgument);
+            }
+
+            if sbinfo.len == 0 {
+                if timeout == 0 {
+                    return Ok(0);
+                }
+                let start = *TICKS.lock();
+                loop {
+                    if timeout > 0 {
+                        let now = *TICKS.lock();
+                        if now - start >= timeout as usize {
+                            return Ok(0);
+                        }
+                    }
+                    if Cpus::myproc().unwrap().inner.lock().killed {
+                        return Err(Interrupted);
+                    }
+                    let mut ticks = TICKS.lock();
+                    let now = *ticks;
+                    ticks = sleep(&now as *const _ as usize, ticks);
+                }
+            }
+
+            let mut fds: Vec<poll::PollFd> = Vec::new();
+            fds.resize(sbinfo.len, poll::PollFd::default());
+            let Some(_) = fetch_slice(Slice::Buf(*sbinfo), &mut fds)? else {
+                return Err(InvalidArgument);
+            };
+
+            let start = *TICKS.lock();
+            loop {
+                let ready = poll_check(&mut fds)?;
+                if ready > 0 || timeout == 0 {
+                    either_copyout(sbinfo.ptr.into(), &fds[..sbinfo.len])?;
+                    return Ok(ready);
+                }
+                if timeout > 0 {
+                    let now = *TICKS.lock();
+                    if now - start >= timeout as usize {
+                        either_copyout(sbinfo.ptr.into(), &fds[..sbinfo.len])?;
+                        return Ok(0);
+                    }
+                }
+                if Cpus::myproc().unwrap().inner.lock().killed {
+                    return Err(Interrupted);
+                }
+                let mut ticks = TICKS.lock();
+                let now = *ticks;
+                ticks = sleep(&now as *const _ as usize, ticks);
+            }
+        }
+    }
+
+    pub fn select() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        Self::poll()
+    }
 }
 
 impl SysCalls {
@@ -887,6 +991,8 @@ impl SysCalls {
             29 => Self::Join,
             30 => Self::ExtIrqCount,
             31 => Self::KTaskPolls,
+            32 => Self::Poll,
+            33 => Self::Select,
             _ => Self::Invalid,
         }
     }
