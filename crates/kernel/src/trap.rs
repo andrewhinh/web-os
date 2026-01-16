@@ -139,6 +139,8 @@ pub extern "C" fn usertrap() -> ! {
         }
     }
 
+    proc::deliver_signals(&p);
+
     if p.inner.lock().killed {
         proc::exit(-1)
     }
@@ -281,7 +283,8 @@ fn clockintr() {
     if cpu == 0 {
         let mut ticks = TICKS.lock();
         *ticks += 1;
-        proc::wakeup(&(*ticks) as *const _ as usize)
+        proc::wakeup(&(*ticks) as *const _ as usize);
+        proc::on_tick(*ticks);
     }
 }
 

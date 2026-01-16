@@ -14,6 +14,7 @@ pub mod sys {
     pub use kernel::file::Major;
     pub use kernel::fs;
     pub use kernel::poll;
+    pub use kernel::signal;
     pub use kernel::stat;
     pub use kernel::sync;
     use stat::Stat;
@@ -29,6 +30,7 @@ pub mod mutex;
 pub mod path;
 pub mod pipe;
 pub mod process;
+pub mod signal;
 pub mod thread;
 pub mod umalloc;
 // pub mod regex;

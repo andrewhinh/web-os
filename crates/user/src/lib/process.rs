@@ -11,7 +11,7 @@ use crate::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::Path,
-    pipe, sys,
+    pipe, signal, sys,
 };
 
 #[derive(Clone, Default)]
@@ -495,7 +495,15 @@ impl Process {
         if self.status.is_some() {
             Err(sys::Error::InvalidArgument)
         } else {
-            sys::kill(self.pid)
+            sys::kill(self.pid, signal::SIGTERM)
+        }
+    }
+
+    pub fn kill_signal(&mut self, sig: usize) -> sys::Result<()> {
+        if self.status.is_some() {
+            Err(sys::Error::InvalidArgument)
+        } else {
+            sys::kill(self.pid, sig)
         }
     }
 

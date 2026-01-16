@@ -134,6 +134,11 @@ name = "_test_poll"
 path = "src/bin/test_poll.rs"
 test = false
 
+[[bin]]
+name = "_test_signal"
+path = "src/bin/test_signal.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

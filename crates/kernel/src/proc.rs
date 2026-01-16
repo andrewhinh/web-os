@@ -20,12 +20,15 @@ use crate::param::*;
 use crate::riscv::registers::scause::Exception;
 use crate::riscv::{pteflags::*, *};
 use crate::runq::{runq_is_empty, runq_pop, runq_push_cpu};
+use crate::signal::{
+    NSIG, SIG_DFL, SIG_IGN, SIGALRM, SIGKILL, SigDefaultAction, WNOHANG, default_action, sig_mask,
+};
 use crate::spinlock::{Mutex, MutexGuard};
 use crate::swtch::swtch;
 use crate::sync::{LazyLock, OnceLock};
 use crate::task::{ready_is_empty_cpu, run_ready_tasks_cpu};
 use crate::trampoline::trampoline;
-use crate::trap::usertrap_ret;
+use crate::trap::{TICKS, usertrap_ret};
 use crate::vm::{Addr, KVAddr, KVM, PAddr, Page, PageAllocator, Stack, UVAddr, Uvm, VirtAddr};
 use crate::{array, println};
 
@@ -341,6 +344,10 @@ pub struct ProcInner {
     pub xstate: i32,      // Exit status to be returned to parent's wait
     pub pid: PId,         // Process ID
     pub last_cpu: usize,  // Last CPU this process was run on
+    pub sig_pending: u32,
+    pub sig_handlers: [usize; NSIG],
+    pub sig_alarm_deadline: usize,
+    pub sig_alarm_interval: usize,
 }
 
 // These are private to the process, so lock need not be held.
@@ -351,6 +358,9 @@ pub struct ProcData {
     pub trapframe: Option<Box<Trapframe>>, // data page for trampoline.rs
     pub trapframe_va: UVAddr,              // user-VA of this proc's trapframe mapping
     pub context: Context,                  // swtch() here to run process
+    pub sig_trapframe: Trapframe,          // saved trapframe during signal
+    pub sig_active: bool,                  // currently in signal handler
+    pub sig_restorer: usize,               // user-space restorer for signals
     pub name: String,                      // Process name (debugging)
     pub is_thread: bool,                   // created by clone()
     pub ustack: usize,                     // clone()'s stack base
@@ -629,6 +639,9 @@ impl Proc {
         data.aspace.take();
         data.vmas.clear();
         data.mmap_base = user_mem_top(NPROC);
+        data.sig_trapframe = Trapframe::default();
+        data.sig_active = false;
+        data.sig_restorer = 0;
         guard.pid = PId(0);
         data.name.clear();
         data.is_thread = false;
@@ -636,6 +649,10 @@ impl Proc {
         guard.chan = 0;
         guard.killed = false;
         guard.xstate = 0;
+        guard.sig_pending = 0;
+        guard.sig_handlers = [SIG_DFL; NSIG];
+        guard.sig_alarm_deadline = 0;
+        guard.sig_alarm_interval = 0;
         guard.state = ProcState::UNUSED;
         drop(guard);
         for wb in writebacks {
@@ -808,6 +825,10 @@ impl ProcInner {
             xstate: 0,
             pid: PId(0),
             last_cpu: 0,
+            sig_pending: 0,
+            sig_handlers: [SIG_DFL; NSIG],
+            sig_alarm_deadline: 0,
+            sig_alarm_interval: 0,
         }
     }
 }
@@ -826,6 +847,9 @@ impl ProcData {
             trapframe: None,
             trapframe_va: UVAddr::from(0),
             context: Context::new(),
+            sig_trapframe: Trapframe::default(),
+            sig_active: false,
+            sig_restorer: 0,
             name: String::new(),
             is_thread: false,
             ustack: 0,
@@ -1130,12 +1154,82 @@ pub fn wakeup(chan: usize) {
     }
 }
 
+pub fn on_tick(now: usize) {
+    for (idx, p) in PROCS.pool.iter().enumerate() {
+        let mut guard = p.inner.lock();
+        if guard.sig_alarm_deadline == 0 {
+            continue;
+        }
+        if guard.state == ProcState::UNUSED || guard.state == ProcState::ZOMBIE {
+            continue;
+        }
+        if now < guard.sig_alarm_deadline {
+            continue;
+        }
+        guard.sig_pending |= sig_mask(SIGALRM);
+        if guard.sig_alarm_interval == 0 {
+            guard.sig_alarm_deadline = 0;
+        } else if let Some(next) = now.checked_add(guard.sig_alarm_interval) {
+            guard.sig_alarm_deadline = next;
+        } else {
+            guard.sig_alarm_deadline = 0;
+        }
+        if guard.state == ProcState::SLEEPING {
+            make_runnable(idx, &mut guard);
+        }
+    }
+}
+
+pub fn deliver_signals(p: &Arc<Proc>) {
+    let data = p.data_mut();
+    if data.sig_active {
+        return;
+    }
+    let mut guard = p.inner.lock();
+    let pending = guard.sig_pending;
+    if pending == 0 {
+        return;
+    }
+    let sig = pending.trailing_zeros() as usize + 1;
+    let mask = sig_mask(sig);
+    if sig == SIGKILL {
+        guard.sig_pending &= !mask;
+        guard.killed = true;
+        return;
+    }
+    let handler = guard.sig_handlers[sig - 1];
+    if handler == SIG_IGN {
+        guard.sig_pending &= !mask;
+        return;
+    }
+    if handler == SIG_DFL {
+        guard.sig_pending &= !mask;
+        if default_action(sig) == SigDefaultAction::Terminate {
+            guard.killed = true;
+        }
+        return;
+    }
+    let restorer = data.sig_restorer;
+    if restorer == 0 {
+        guard.sig_pending &= !mask;
+        guard.killed = true;
+        return;
+    }
+    let tf = data.trapframe.as_mut().unwrap();
+    data.sig_trapframe = **tf;
+    data.sig_active = true;
+    guard.sig_pending &= !mask;
+    tf.epc = handler;
+    tf.a0 = sig;
+    tf.ra = restorer;
+}
+
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 pub fn fork() -> Result<usize> {
     let p = Cpus::myproc().unwrap();
     let p_data = p.data();
-    let (c, c_guard) = PROCS.alloc()?;
+    let (c, mut c_guard) = PROCS.alloc()?;
     let c_data = c.data_mut();
 
     // Copy user memory from parent to child.
@@ -1166,6 +1260,17 @@ pub fn fork() -> Result<usize> {
     c_data.cwd = p_data.cwd.clone();
 
     c_data.name.push_str(&p_data.name);
+    c_data.sig_trapframe = Trapframe::default();
+    c_data.sig_active = false;
+    c_data.sig_restorer = p_data.sig_restorer;
+
+    {
+        let p_inner = p.inner.lock();
+        c_guard.sig_handlers = p_inner.sig_handlers;
+        c_guard.sig_pending = 0;
+        c_guard.sig_alarm_deadline = p_inner.sig_alarm_deadline;
+        c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
+    }
 
     // copy mmap metadata + any already-mapped pages
     c_data.mmap_base = p_data.mmap_base;
@@ -1221,7 +1326,7 @@ pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize
     if stack.checked_add(PGSIZE).is_none() || stack + PGSIZE > p_sz {
         return Err(BadVirtAddr);
     }
-    let (c, c_guard) = PROCS.alloc()?;
+    let (c, mut c_guard) = PROCS.alloc()?;
     let c_data = c.data_mut();
 
     // Switch child to share parent's address space.
@@ -1252,6 +1357,17 @@ pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize
     c_data.ofile.clone_from_slice(&p_data.ofile);
     c_data.cwd = p_data.cwd.clone();
     c_data.name.push_str(&p_data.name);
+    c_data.sig_trapframe = Trapframe::default();
+    c_data.sig_active = false;
+    c_data.sig_restorer = p_data.sig_restorer;
+
+    {
+        let p_inner = p.inner.lock();
+        c_guard.sig_handlers = p_inner.sig_handlers;
+        c_guard.sig_pending = 0;
+        c_guard.sig_alarm_deadline = p_inner.sig_alarm_deadline;
+        c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
+    }
 
     let pid = c_guard.pid;
     let c_inner = Mutex::unlock(c_guard);
@@ -1312,11 +1428,27 @@ pub fn join(addr: UVAddr) -> Result<usize> {
 // Kill the process with the given pid.
 // The victim won't exit until it tries to return
 // to user space (see usertrap in trap.rs)
-pub fn kill(pid: usize) -> Result<()> {
+pub fn kill(pid: usize, sig: usize) -> Result<()> {
+    if sig == 0 || sig > NSIG {
+        return Err(InvalidArgument);
+    }
+    let mask = sig_mask(sig);
+    if mask == 0 {
+        return Err(InvalidArgument);
+    }
     for (idx, p) in PROCS.pool.iter().enumerate() {
         let mut guard = p.inner.lock();
         if guard.pid.0 == pid {
-            guard.killed = true;
+            if sig == SIGKILL
+                || (guard.sig_handlers[sig - 1] == SIG_DFL
+                    && default_action(sig) == SigDefaultAction::Terminate)
+            {
+                guard.killed = true;
+            }
+            if sig != SIGKILL && guard.sig_handlers[sig - 1] == SIG_IGN {
+                return Ok(());
+            }
+            guard.sig_pending |= mask;
             if guard.state == ProcState::SLEEPING {
                 // Wake process from sleep().
                 make_runnable(idx, &mut guard);
@@ -1327,12 +1459,80 @@ pub fn kill(pid: usize) -> Result<()> {
     Err(NoSuchProcess)
 }
 
+pub fn sigaction(sig: usize, handler: usize, restorer: usize) -> Result<usize> {
+    if sig == 0 || sig > NSIG {
+        return Err(InvalidArgument);
+    }
+    if sig == SIGKILL {
+        return Err(PermissionDenied);
+    }
+    let p = Cpus::myproc().unwrap();
+    let mut guard = p.inner.lock();
+    let prev = guard.sig_handlers[sig - 1];
+    let prev_ret = match prev {
+        SIG_DFL => 0,
+        SIG_IGN => 1,
+        _ => prev,
+    };
+    if handler != SIG_DFL && handler != SIG_IGN {
+        if restorer == 0 {
+            return Err(InvalidArgument);
+        }
+        p.data_mut().sig_restorer = restorer;
+    }
+    guard.sig_handlers[sig - 1] = handler;
+    Ok(prev_ret)
+}
+
+pub fn sigreturn() -> Result<()> {
+    let p = Cpus::myproc().unwrap();
+    let data = p.data_mut();
+    if !data.sig_active {
+        return Err(InvalidArgument);
+    }
+    let saved = data.sig_trapframe;
+    let tf = data.trapframe.as_mut().unwrap();
+    **tf = saved;
+    data.sig_active = false;
+    Ok(())
+}
+
+pub fn setitimer(initial: usize, interval: usize) -> Result<usize> {
+    let p = Cpus::myproc().unwrap();
+    let now = *TICKS.lock();
+    let mut guard = p.inner.lock();
+    let prev = if guard.sig_alarm_deadline == 0 {
+        0
+    } else {
+        guard.sig_alarm_deadline.saturating_sub(now)
+    };
+    if initial == 0 {
+        guard.sig_alarm_deadline = 0;
+        guard.sig_alarm_interval = 0;
+        return Ok(prev);
+    }
+    let Some(deadline) = now.checked_add(initial) else {
+        return Err(InvalidArgument);
+    };
+    guard.sig_alarm_deadline = deadline;
+    guard.sig_alarm_interval = interval;
+    Ok(prev)
+}
+
 // Wait for a child process to exit and return its pid.
 // Return Err, if this process has no children.
 pub fn wait(addr: UVAddr) -> Result<usize> {
-    let pid;
+    waitpid(-1, addr, 0)
+}
+
+pub fn waitpid(pid: isize, addr: UVAddr, options: usize) -> Result<usize> {
     let mut havekids;
     let p = Cpus::myproc().unwrap();
+    let want_pid = if pid > 0 { Some(pid as usize) } else { None };
+
+    if pid < -1 {
+        return Err(InvalidArgument);
+    }
 
     let mut parents = PROCS.parents.lock();
 
@@ -1347,10 +1547,15 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
                     }
                     // make sure the child isn't still in exit() or swtch().
                     let c_guard = c.inner.lock();
+                    if let Some(want) = want_pid
+                        && c_guard.pid.0 != want
+                    {
+                        continue;
+                    }
                     havekids = true;
                     if c_guard.state == ProcState::ZOMBIE {
                         // Found one.
-                        pid = c_guard.pid.0;
+                        let pid = c_guard.pid.0;
                         let aspace = p.data().aspace.as_ref().unwrap();
                         let mut as_inner = aspace.inner.lock();
                         as_inner
@@ -1366,9 +1571,15 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
                 _ => continue,
             }
         }
+        if (options & WNOHANG) != 0 {
+            return Ok(0);
+        }
         // No point waiting if we don't have any children.
         if !havekids || p.inner.lock().killed {
             break Err(NoChildProcesses);
+        }
+        if p.inner.lock().sig_pending != 0 {
+            return Err(Interrupted);
         }
 
         // wait for a child to exit

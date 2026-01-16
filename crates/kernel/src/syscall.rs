@@ -31,7 +31,7 @@ use crate::{
     vm::{Addr, UVAddr},
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum SysCalls {
     Fork = 1,
@@ -67,6 +67,10 @@ pub enum SysCalls {
     KTaskPolls = 31,
     Poll = 32,
     Select = 33,
+    Waitpid = 34,
+    Sigaction = 35,
+    Sigreturn = 36,
+    Setitimer = 37,
     Invalid = 0,
 }
 
@@ -102,7 +106,7 @@ impl SysCalls {
         (Fn::U(Self::pipe), "(p: &mut [usize])"), /* Create a pipe, put read/write file
                                                    * descriptors in p[0] and p[1]. */
         (Fn::I(Self::read), "(fd: usize, buf: &mut [u8])"), /* Read n bytes into buf; returns number read; or 0 if end of file */
-        (Fn::U(Self::kill), "(pid: usize)"),                /* Terminate process PID. Returns
+        (Fn::U(Self::kill), "(pid: usize, sig: usize)"),    /* Terminate process PID. Returns
                                                              * Ok(()) or Err(()) */
         (
             Fn::I(Self::exec),
@@ -153,6 +157,16 @@ impl SysCalls {
             Fn::I(Self::select),
             "(fds: &mut [poll::PollFd], timeout: isize)",
         ),
+        (
+            Fn::I(Self::waitpid),
+            "(pid: isize, xstatus: &mut i32, options: usize)",
+        ),
+        (
+            Fn::I(Self::sigaction),
+            "(signum: usize, handler: usize, restorer: usize)",
+        ),
+        (Fn::U(Self::sigreturn), "()"),
+        (Fn::I(Self::setitimer), "(initial: usize, interval: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -174,6 +188,10 @@ pub fn syscall() {
     let pdata = p.data_mut();
     let tf = pdata.trapframe.as_mut().unwrap();
     let syscall_id = SysCalls::from_usize(tf.a7);
+    if syscall_id == SysCalls::Sigreturn {
+        let _ = SysCalls::sigreturn();
+        return;
+    }
     tf.a0 = match syscall_id {
         SysCalls::Invalid => {
             println!("{} {}: unknown sys call {}", p.pid(), pdata.name, tf.a7);
@@ -449,6 +467,18 @@ impl SysCalls {
         }
     }
 
+    pub fn waitpid() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let pid = argraw(0) as isize;
+            let addr: UVAddr = argraw(1).into();
+            let options = argraw(2);
+            waitpid(pid, addr, options)
+        }
+    }
+
     pub fn join() -> Result<usize> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(0);
@@ -524,12 +554,45 @@ impl SysCalls {
         #[cfg(all(target_os = "none", feature = "kernel"))]
         {
             let pid = argraw(0);
+            let sig = argraw(1);
 
             if pid == 0 {
                 Err(PermissionDenied)
             } else {
-                kill(pid)
+                kill(pid, sig)
             }
+        }
+    }
+
+    pub fn sigaction() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let signum = argraw(0);
+            let handler = argraw(1);
+            let restorer = argraw(2);
+            sigaction(signum, handler, restorer)
+        }
+    }
+
+    pub fn sigreturn() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            sigreturn()
+        }
+    }
+
+    pub fn setitimer() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let initial = argraw(0);
+            let interval = argraw(1);
+            setitimer(initial, interval)
         }
     }
 
@@ -998,6 +1061,10 @@ impl SysCalls {
             31 => Self::KTaskPolls,
             32 => Self::Poll,
             33 => Self::Select,
+            34 => Self::Waitpid,
+            35 => Self::Sigaction,
+            36 => Self::Sigreturn,
+            37 => Self::Setitimer,
             _ => Self::Invalid,
         }
     }

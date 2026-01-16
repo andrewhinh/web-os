@@ -39,6 +39,7 @@ pub mod poll;
 pub mod proc;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod semaphore;
+pub mod signal;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod sleeplock;
 #[cfg(all(target_os = "none", feature = "kernel"))]
