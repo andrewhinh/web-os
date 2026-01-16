@@ -344,6 +344,10 @@ struct DInode {
     nlink: u16,                // Number of links to inode in file system
     size: u32,                 // Size of data (bytes)
     addrs: [u32; NDIRECT + 2], // Data block address
+    atime: u64,                // Ticks since boot
+    mtime: u64,                // Ticks since boot
+    ctime: u64,                // Ticks since boot
+    _padding: [u32; 10],       // Pad to 128B
 }
 
 fn mkfs_as_bytes<T: ?Sized>(refs: &T) -> &[u8] {

@@ -16,6 +16,9 @@ pub struct Stat {
     pub ftype: FileType, // Type of file
     pub nlink: u16,      // Number of links to file
     pub size: usize,     // Size of file in bytes
+    pub atime: u64,      // Ticks since boot
+    pub mtime: u64,      // Ticks since boot
+    pub ctime: u64,      // Ticks since boot
 }
 
 impl Stat {

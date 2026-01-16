@@ -149,12 +149,20 @@ impl FNod {
     }
 
     fn read(&self, dst: VirtAddr, n: usize) -> Result<usize> {
-        let mut ip = self.ip.lock();
-        let off = unsafe { &mut *self.off.get() };
+        LOG.begin_op();
+        let res = {
+            let mut ip = self.ip.lock();
+            let off = unsafe { &mut *self.off.get() };
 
-        let r = ip.read(dst, *off, n)?;
-        *off += r as u32;
-        Ok(r)
+            let r = ip.read(dst, *off, n)?;
+            if r > 0 {
+                ip.touch_atime();
+            }
+            *off += r as u32;
+            Ok(r)
+        };
+        LOG.end_op();
+        res
     }
 
     fn write(&self, src: VirtAddr, n: usize, append: bool) -> Result<usize> {
@@ -183,6 +191,7 @@ impl FNod {
                 ret = guard.write(src, *off, n1);
                 match ret {
                     Ok(r) => {
+                        guard.touch_mtime_ctime();
                         *off += r as u32;
                         i += r;
                         ret = Ok(i);
@@ -263,6 +272,17 @@ impl File {
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
             _ => self.f.as_ref().unwrap().write(src, n, self.append),
+        }
+    }
+
+    pub fn sync(&self) -> Result<()> {
+        match self.f.as_ref().unwrap().as_ref() {
+            VFile::Inode(_) | VFile::Device(_) => {
+                LOG.sync();
+                Ok(())
+            }
+            VFile::Pipe(_) => Err(InvalidArgument),
+            VFile::None => Err(BadFileDescriptor),
         }
     }
 

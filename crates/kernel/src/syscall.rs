@@ -81,6 +81,7 @@ pub enum SysCalls {
     SemTryWait = 44,
     SemPost = 45,
     SemClose = 46,
+    Fsync = 47,
     Invalid = 0,
 }
 
@@ -186,6 +187,7 @@ impl SysCalls {
         (Fn::I(Self::semtrywait), "(id: usize)"),
         (Fn::U(Self::sempost), "(id: usize)"),
         (Fn::U(Self::semclose), "(id: usize)"),
+        (Fn::U(Self::fsync), "(fd: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -851,6 +853,17 @@ impl SysCalls {
         }
     }
 
+    pub fn fsync() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut fd = 0;
+            let (f, _) = File::from_arg(0, &mut fd)?;
+            f.sync()
+        }
+    }
+
     pub fn link() -> Result<()> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(());
@@ -1184,6 +1197,7 @@ impl SysCalls {
             44 => Self::SemTryWait,
             45 => Self::SemPost,
             46 => Self::SemClose,
+            47 => Self::Fsync,
             _ => Self::Invalid,
         }
     }

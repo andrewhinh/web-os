@@ -187,6 +187,34 @@ impl Mutex<Log> {
         }
     }
 
+    pub fn sync(&self) {
+        let mut log_ptr: Option<*mut Log> = None;
+        let mut guard = self.lock();
+        loop {
+            if guard.committing || guard.outstanding > 0 {
+                guard = proc::sleep(guard.deref() as *const _ as usize, guard);
+            } else {
+                break;
+            }
+        }
+        if guard.lh.n == 0 {
+            return;
+        }
+        log_ptr.replace(guard.deref_mut() as *mut _);
+        guard.committing = true;
+        drop(guard);
+
+        if let Some(log) = log_ptr {
+            unsafe {
+                log.as_mut().unwrap().commit();
+            }
+        }
+
+        let mut guard = self.lock();
+        guard.committing = false;
+        proc::wakeup(guard.deref() as *const _ as usize);
+    }
+
     // Caller has modified b->data and is done with the buffer.
     // Record the block number and pin in the cache by increasing refcnt.
     // commit()/write() will do the disk write.

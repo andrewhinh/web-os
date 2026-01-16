@@ -149,6 +149,11 @@ name = "_test_disk"
 path = "src/bin/test_disk.rs"
 test = false
 
+[[bin]]
+name = "_test_fsync"
+path = "src/bin/test_fsync.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

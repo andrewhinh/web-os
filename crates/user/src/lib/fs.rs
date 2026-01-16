@@ -74,6 +74,10 @@ impl File {
     pub fn clear_nonblock(&mut self) -> sys::Result<usize> {
         sys::nonblock(self.0, 0).map(|_| 0)
     }
+
+    pub fn sync(&self) -> sys::Result<()> {
+        sys::fsync(self.0)
+    }
 }
 
 impl Drop for File {
@@ -212,6 +216,18 @@ impl Metadata {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.0.size
+    }
+
+    pub fn atime(&self) -> u64 {
+        self.0.atime
+    }
+
+    pub fn mtime(&self) -> u64 {
+        self.0.mtime
+    }
+
+    pub fn ctime(&self) -> u64 {
+        self.0.ctime
     }
 
     pub fn inum(&self) -> u32 {

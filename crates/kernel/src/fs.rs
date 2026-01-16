@@ -26,6 +26,8 @@ use crate::stat::FileType;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::stat::Stat;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::trap::TICKS;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::{
     sync::{LazyLock, OnceLock},
     vm::VirtAddr,
@@ -86,6 +88,10 @@ struct DInode {
     nlink: u16,                // Number of links to inode in file system
     size: u32,                 // Size of data (bytes)
     addrs: [u32; NDIRECT + 2], // Data block address
+    atime: u64,                // Ticks since boot
+    mtime: u64,                // Ticks since boot
+    ctime: u64,                // Ticks since boot
+    _padding: [u32; 10],       // Pad to 128B
 }
 
 // Inodes per block
@@ -271,6 +277,9 @@ pub struct IData {
     nlink: u16,
     size: u32,
     addrs: [u32; NDIRECT + 2],
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -288,6 +297,35 @@ impl IData {
             inum,
             ..Default::default()
         }
+    }
+
+    fn now_ticks() -> u64 {
+        *TICKS.lock() as u64
+    }
+
+    pub fn init_times(&mut self) {
+        let now = Self::now_ticks();
+        self.atime = now;
+        self.mtime = now;
+        self.ctime = now;
+        self.update();
+    }
+
+    pub fn touch_atime(&mut self) {
+        self.atime = Self::now_ticks();
+        self.update();
+    }
+
+    pub fn touch_mtime_ctime(&mut self) {
+        let now = Self::now_ticks();
+        self.mtime = now;
+        self.ctime = now;
+        self.update();
+    }
+
+    pub fn touch_ctime(&mut self) {
+        self.ctime = Self::now_ticks();
+        self.update();
     }
 
     pub fn size(&self) -> u32 {
@@ -339,6 +377,7 @@ impl IData {
             LinkOp::Minus => self.nlink -= 1,
             LinkOp::Init(num) => self.nlink = num,
         }
+        self.ctime = Self::now_ticks();
         self.update();
     }
 
@@ -359,6 +398,9 @@ impl IData {
         dip.nlink = self.nlink;
         dip.size = self.size;
         dip.addrs.copy_from_slice(&self.addrs);
+        dip.atime = self.atime;
+        dip.mtime = self.mtime;
+        dip.ctime = self.ctime;
         LOG.write(bp);
     }
 
@@ -409,6 +451,9 @@ impl IData {
             *ndaddr = 0;
         }
         self.size = 0;
+        let now = Self::now_ticks();
+        self.mtime = now;
+        self.ctime = now;
         // update is needed, because size and addrs are updated.
         self.update();
     }
@@ -500,6 +545,9 @@ impl IData {
         st.ftype = self.itype;
         st.nlink = self.nlink;
         st.size = self.size as usize;
+        st.atime = self.atime;
+        st.mtime = self.mtime;
+        st.ctime = self.ctime;
     }
 
     // Read data from inode.
@@ -624,6 +672,7 @@ impl IData {
             off,
             size_of::<DirEnt>(),
         )?;
+        self.touch_mtime_ctime();
         Ok(())
     }
 
@@ -679,6 +728,9 @@ impl MInode {
             guard.nlink = dip.nlink;
             guard.size = dip.size;
             guard.addrs.copy_from_slice(&dip.addrs);
+            guard.atime = dip.atime;
+            guard.mtime = dip.mtime;
+            guard.ctime = dip.ctime;
             guard.valid = true;
             guard.dev = self.dev;
             guard.inum = self.inum;
@@ -892,6 +944,7 @@ pub fn unlink(path: &Path) -> Result<()> {
         dp_guard.set_nlink(LinkOp::Minus);
     }
 
+    dp_guard.touch_mtime_ctime();
     ip_guard.set_nlink(LinkOp::Minus);
 
     Ok(())
@@ -939,6 +992,7 @@ pub fn create(path: &Path, type_: FileType, major: u16, minor: u16) -> Result<In
 
         ip_guard.set_major_minor(Major::from_u16(major), minor);
         ip_guard.set_nlink(LinkOp::Init(1));
+        ip_guard.init_times();
     }
 
     Ok(ip)

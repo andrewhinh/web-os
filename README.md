@@ -39,7 +39,7 @@ act push --bind                                  # test CI
 - [x] file locks: fcntl F_SETLK/F_GETLK
 - [x] raw block device file: user fsck reads disk
 - [ ] fs names/attrs: rename + symlinks + permissions + umask
-- [ ] fs durability: fsync + timestamps
+- [x] fs durability: fsync + timestamps
 - [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [ ] sockets: AF_UNIX
 - [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
