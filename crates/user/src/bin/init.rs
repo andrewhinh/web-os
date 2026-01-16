@@ -37,6 +37,13 @@ fn main() -> sys::Result<()> {
             Err(e) => return Err(e),
         }
     }
+    if File::open("/dev/disk").is_err() {
+        match sys::mknod("/dev/disk", Major::Disk as usize, 0) {
+            Ok(()) => {}
+            Err(sys::Error::AlreadyExists) => {}
+            Err(e) => return Err(e),
+        }
+    }
 
     loop {
         println!("\ninit: starting sh\n");

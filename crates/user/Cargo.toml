@@ -144,6 +144,11 @@ name = "_test_ipc"
 path = "src/bin/test_ipc.rs"
 test = false
 
+[[bin]]
+name = "_test_disk"
+path = "src/bin/test_disk.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

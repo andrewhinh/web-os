@@ -69,14 +69,15 @@ pub enum VFile {
 #[derive(Debug)]
 pub struct DNod {
     driver: &'static dyn Device,
+    off: UnsafeCell<usize>, // Safety: offset uses per-open file state.
     ip: Inode,
 }
 
 // Device functions, map this trait using dyn
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub trait Device: Send + Sync {
-    fn read(&self, dst: VirtAddr, n: usize) -> Result<usize>;
-    fn write(&self, src: VirtAddr, n: usize) -> Result<usize>;
+    fn read(&self, dst: VirtAddr, n: usize, offset: usize) -> Result<usize>;
+    fn write(&self, src: VirtAddr, n: usize, offset: usize) -> Result<usize>;
     fn major(&self) -> Major;
 }
 
@@ -93,6 +94,36 @@ impl Deref for DNod {
 
     fn deref(&self) -> &Self::Target {
         self.driver
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+unsafe impl Send for DNod {}
+#[cfg(all(target_os = "none", feature = "kernel"))]
+unsafe impl Sync for DNod {}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+impl DNod {
+    pub fn new(driver: &'static dyn Device, ip: Inode) -> Self {
+        Self {
+            driver,
+            off: UnsafeCell::new(0),
+            ip,
+        }
+    }
+
+    fn read(&self, dst: VirtAddr, n: usize) -> Result<usize> {
+        let off = unsafe { &mut *self.off.get() };
+        let r = self.driver.read(dst, n, *off)?;
+        *off += r;
+        Ok(r)
+    }
+
+    fn write(&self, src: VirtAddr, n: usize) -> Result<usize> {
+        let off = unsafe { &mut *self.off.get() };
+        let r = self.driver.write(src, n, *off)?;
+        *off += r;
+        Ok(r)
     }
 }
 
@@ -194,7 +225,7 @@ impl VFile {
         let mut stat: Stat = Default::default();
 
         match self {
-            VFile::Device(DNod { driver: _, ip }) | VFile::Inode(FNod { off: _, ip }) => {
+            VFile::Device(DNod { driver: _, ip, .. }) | VFile::Inode(FNod { off: _, ip }) => {
                 {
                     ip.lock().stat(&mut stat);
                 }
@@ -319,7 +350,7 @@ impl File {
 
     pub fn lock_key(&self) -> Option<(u32, u32)> {
         match self.f.as_ref()?.as_ref() {
-            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip }) => {
+            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip, .. }) => {
                 Some((ip.dev(), ip.inum()))
             }
             _ => None,
@@ -385,7 +416,7 @@ impl File {
 
     pub fn inode(&self) -> Option<Inode> {
         match self.f.as_ref()?.as_ref() {
-            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip }) => {
+            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip, .. }) => {
                 Some(ip.clone())
             }
             _ => None,
@@ -424,7 +455,7 @@ impl Drop for File {
         }
 
         // if ref count == 1
-        if let Ok(VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip })) =
+        if let Ok(VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip, .. })) =
             Arc::try_unwrap(f)
         {
             LOG.begin_op();
@@ -466,7 +497,7 @@ impl FTable {
                     FileType::Device if ip_guard.major() != Major::Invalid => {
                         let driver = DEVSW.get(ip_guard.major()).unwrap();
                         SleepLock::unlock(ip_guard);
-                        VFile::Device(DNod { driver, ip })
+                        VFile::Device(DNod::new(driver, ip))
                     }
                     FileType::Dir | FileType::File => {
                         let mut offset = 0;
@@ -570,6 +601,7 @@ impl DevSW {
 pub enum Major {
     Null = 0,
     Console = 1,
+    Disk = 2,
     #[default]
     Invalid,
 }
@@ -579,6 +611,7 @@ impl Major {
         match bits {
             0 => Major::Null,
             1 => Major::Console,
+            2 => Major::Disk,
             _ => Major::Invalid,
         }
     }

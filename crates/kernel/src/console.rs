@@ -48,7 +48,7 @@ impl Device for Mutex<Cons> {
     // user read()s from the console go here.
     // copy (up to) a whole input line to dst.
     //
-    fn read(&self, mut dst: VirtAddr, mut n: usize) -> Result<usize> {
+    fn read(&self, mut dst: VirtAddr, mut n: usize, _offset: usize) -> Result<usize> {
         let mut cons_guard = self.lock();
         let p = Cpus::myproc().unwrap();
 
@@ -93,7 +93,7 @@ impl Device for Mutex<Cons> {
 
     // user write()s to the console go here.
     //
-    fn write(&self, src: VirtAddr, n: usize) -> Result<usize> {
+    fn write(&self, src: VirtAddr, n: usize, _offset: usize) -> Result<usize> {
         for i in 0..n {
             let mut c = 0;
             either_copyin(&mut c, src + i)?;

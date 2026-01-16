@@ -4,8 +4,17 @@ use core::{
 };
 
 use crate::{
-    array, bio::Data, fs::BSIZE, memlayout::VIRTIO0, proc, sleeplock::SleepLockGuard,
+    array,
+    bio::{BCACHE, Data},
+    error::{Error::*, Result},
+    file::{DEVSW, Device, Major},
+    fs::{BSIZE, SB},
+    memlayout::VIRTIO0,
+    param::ROOTDEV,
+    proc::{self, either_copyin, either_copyout},
+    sleeplock::SleepLockGuard,
     spinlock::Mutex,
+    vm::VirtAddr,
 };
 
 // driver for qemu's virtio disk device.
@@ -15,6 +24,72 @@ use crate::{
 // virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 pub static DISK: Mutex<Disk> = Mutex::new(Disk::new(), "virtio_disk");
+pub static RAW_DISK: RawDisk = RawDisk;
+
+pub struct RawDisk;
+
+impl RawDisk {
+    fn disk_size_bytes(&self) -> Result<usize> {
+        let sb = SB.get().ok_or(InvalidArgument)?;
+        let blocks = usize::try_from(sb.size).map_err(|_| InvalidArgument)?;
+        blocks.checked_mul(BSIZE).ok_or(InvalidArgument)
+    }
+}
+
+impl Device for RawDisk {
+    fn read(&self, mut dst: VirtAddr, mut n: usize, offset: usize) -> Result<usize> {
+        let size = self.disk_size_bytes()?;
+        if offset >= size {
+            return Ok(0);
+        }
+        if offset + n > size {
+            n = size - offset;
+        }
+
+        let mut done = 0;
+        let mut off = offset;
+        while done < n {
+            let blockno = (off / BSIZE) as u32;
+            let block_off = off % BSIZE;
+            let chunk = core::cmp::min(n - done, BSIZE - block_off);
+            let bp = BCACHE.read(ROOTDEV, blockno);
+            either_copyout(dst, &bp[block_off..(block_off + chunk)])?;
+            done += chunk;
+            off += chunk;
+            dst += chunk;
+        }
+        Ok(done)
+    }
+
+    fn write(&self, mut src: VirtAddr, mut n: usize, offset: usize) -> Result<usize> {
+        let size = self.disk_size_bytes()?;
+        if offset >= size {
+            return Err(InvalidArgument);
+        }
+        if offset + n > size {
+            n = size - offset;
+        }
+
+        let mut done = 0;
+        let mut off = offset;
+        while done < n {
+            let blockno = (off / BSIZE) as u32;
+            let block_off = off % BSIZE;
+            let chunk = core::cmp::min(n - done, BSIZE - block_off);
+            let mut bp = BCACHE.read(ROOTDEV, blockno);
+            either_copyin(&mut bp[block_off..(block_off + chunk)], src)?;
+            bp.write();
+            done += chunk;
+            off += chunk;
+            src += chunk;
+        }
+        Ok(done)
+    }
+
+    fn major(&self) -> Major {
+        Major::Disk
+    }
+}
 
 // Memory mapped IO registers.
 #[repr(usize)]
@@ -399,7 +474,7 @@ impl Disk {
 
     // allocate three descriptors (they need not be contiguous).
     // disk transfers always use three descriptors.
-    fn alloc3_desc(&mut self, idx: &mut [usize; 3]) -> Result<(), ()> {
+    fn alloc3_desc(&mut self, idx: &mut [usize; 3]) -> core::result::Result<(), ()> {
         for (i, idxi) in idx.iter_mut().enumerate() {
             match self.alloc_desc() {
                 Some(ix) => *idxi = ix,
@@ -540,6 +615,7 @@ pub fn init() {
     unsafe {
         DISK.get_mut().init();
     }
+    DEVSW.set(Major::Disk, &RAW_DISK).unwrap();
 }
 
 pub fn spawn_tasks() {

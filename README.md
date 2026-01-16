@@ -37,7 +37,7 @@ act push --bind                                  # test CI
 - [x] adv I/O: nonblock + poll/select
 - [x] fcntl: F_GETFL/F_SETFL + FD_CLOEXEC
 - [x] file locks: fcntl F_SETLK/F_GETLK
-- [ ] raw block device file: user fsck reads disk
+- [x] raw block device file: user fsck reads disk
 - [ ] fs names/attrs: rename + symlinks + permissions + umask
 - [ ] fs durability: fsync + timestamps
 - [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)

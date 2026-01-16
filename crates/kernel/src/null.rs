@@ -6,11 +6,11 @@ pub static NULL: Null = Null;
 pub struct Null;
 
 impl Device for Null {
-    fn read(&self, _dst: VirtAddr, _n: usize) -> Result<usize> {
+    fn read(&self, _dst: VirtAddr, _n: usize, _offset: usize) -> Result<usize> {
         Ok(0)
     }
 
-    fn write(&self, _src: VirtAddr, n: usize) -> Result<usize> {
+    fn write(&self, _src: VirtAddr, n: usize, _offset: usize) -> Result<usize> {
         Ok(n)
     }
 
