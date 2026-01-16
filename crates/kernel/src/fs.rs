@@ -1039,6 +1039,10 @@ impl Path {
         unsafe { &*(s.as_ref() as *const str as *const Path) }
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
+
     pub fn file_name(&self) -> Option<&str> {
         if self.inner.ends_with("..") {
             return None;

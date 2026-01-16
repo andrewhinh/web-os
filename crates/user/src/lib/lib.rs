@@ -32,6 +32,7 @@ pub mod path;
 pub mod pipe;
 pub mod process;
 pub mod signal;
+pub mod socket;
 pub mod thread;
 pub mod umalloc;
 // pub mod regex;

@@ -83,6 +83,11 @@ pub enum SysCalls {
     SemClose = 46,
     Fsync = 47,
     Symlink = 48,
+    Socket = 49,
+    Bind = 50,
+    Listen = 51,
+    Accept = 52,
+    Connect = 53,
     Invalid = 0,
 }
 
@@ -190,6 +195,14 @@ impl SysCalls {
         (Fn::U(Self::semclose), "(id: usize)"),
         (Fn::U(Self::fsync), "(fd: usize)"),
         (Fn::U(Self::symlink), "(target: &str, linkpath: &str)"),
+        (
+            Fn::I(Self::socket),
+            "(domain: usize, stype: usize, protocol: usize)",
+        ),
+        (Fn::U(Self::bind), "(fd: usize, path: &str)"),
+        (Fn::U(Self::listen), "(fd: usize, backlog: usize)"),
+        (Fn::I(Self::accept), "(fd: usize)"),
+        (Fn::U(Self::connect), "(fd: usize, path: &str)"),
     ];
 
     pub fn invalid() -> ! {
@@ -906,6 +919,69 @@ impl SysCalls {
         }
     }
 
+    pub fn socket() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let domain = argraw(0);
+            let stype = argraw(1);
+            let protocol = argraw(2);
+            let file = File::socket(domain, stype, protocol)?;
+            fdalloc(file)
+        }
+    }
+
+    pub fn bind() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut fd = 0;
+            let mut path = [0u8; MAXPATH];
+            let (f, _) = File::from_arg(0, &mut fd)?;
+            let path = Path::from_arg(1, &mut path)?;
+            f.bind(path.as_str())
+        }
+    }
+
+    pub fn listen() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut fd = 0;
+            let (f, _) = File::from_arg(0, &mut fd)?;
+            let backlog = argraw(1);
+            f.listen(backlog)
+        }
+    }
+
+    pub fn accept() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut fd = 0;
+            let (f, _) = File::from_arg(0, &mut fd)?;
+            let file = f.accept()?;
+            fdalloc(file)
+        }
+    }
+
+    pub fn connect() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut fd = 0;
+            let mut path = [0u8; MAXPATH];
+            let (f, _) = File::from_arg(0, &mut fd)?;
+            let path = Path::from_arg(1, &mut path)?;
+            f.connect(path.as_str())
+        }
+    }
+
     pub fn unlink() -> Result<()> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(());
@@ -1221,6 +1297,11 @@ impl SysCalls {
             46 => Self::SemClose,
             47 => Self::Fsync,
             48 => Self::Symlink,
+            49 => Self::Socket,
+            50 => Self::Bind,
+            51 => Self::Listen,
+            52 => Self::Accept,
+            53 => Self::Connect,
             _ => Self::Invalid,
         }
     }

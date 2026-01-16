@@ -42,6 +42,7 @@ pub mod semaphore;
 pub mod signal;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod sleeplock;
+pub mod socket;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod spinlock;
 #[cfg(all(target_os = "none", feature = "kernel"))]

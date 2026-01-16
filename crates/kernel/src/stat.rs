@@ -7,6 +7,7 @@ pub enum FileType {
     File = 2,
     Device = 3,
     Symlink = 4,
+    Socket = 5,
 }
 
 #[derive(Default, Debug, Clone, Copy)]

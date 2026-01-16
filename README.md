@@ -41,7 +41,7 @@ act push --bind                                  # test CI
 - [x] fs names/attrs: rename + symlinks + permissions + umask
 - [x] fs durability: fsync + timestamps
 - [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
-- [ ] sockets: AF_UNIX
+- [x] sockets: AF_UNIX
 - [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
 - [x] cooperative, event-based scheduler for trusted kernel tasks
   - [blog_os](https://os.phil-opp.com/async-await/)
