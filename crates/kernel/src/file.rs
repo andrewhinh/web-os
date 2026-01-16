@@ -12,7 +12,7 @@ use crate::console;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::error::{Error::*, Result};
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::fcntl::{FcntlCmd, OMode, fd, omode};
+use crate::fcntl::{self, FcntlCmd, Flock, OMode, fd, flock, omode};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::fs::{BSIZE, IData, Inode, Path, create};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -24,7 +24,7 @@ use crate::pipe::Pipe;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::poll;
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::proc::either_copyout;
+use crate::proc::{Cpus, either_copyin, either_copyout};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::sleeplock::{SleepLock, SleepLockGuard};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -317,6 +317,15 @@ impl File {
         Ok(())
     }
 
+    pub fn lock_key(&self) -> Option<(u32, u32)> {
+        match self.f.as_ref()?.as_ref() {
+            VFile::Inode(FNod { off: _, ip }) | VFile::Device(DNod { driver: _, ip }) => {
+                Some((ip.dev(), ip.inum()))
+            }
+            _ => None,
+        }
+    }
+
     pub fn do_fcntl(&mut self, cmd: FcntlCmd, arg: usize) -> Result<usize> {
         use FcntlCmd::*;
         match cmd {
@@ -328,6 +337,35 @@ impl File {
                     return Err(InvalidArgument);
                 }
                 self.cloexec = arg & fd::CLOEXEC != 0;
+            }
+            GetLk => {
+                if arg == 0 {
+                    return Err(InvalidArgument);
+                }
+                let mut lock: Flock = Default::default();
+                either_copyin(&mut lock, VirtAddr::User(arg))?;
+                let (dev, inum) = self.lock_key().ok_or(InvalidArgument)?;
+                let pid = Cpus::myproc().unwrap().pid();
+                fcntl::get_lock(dev, inum, pid, &mut lock)?;
+                either_copyout(VirtAddr::User(arg), &lock)?;
+                return Ok(0);
+            }
+            SetLk => {
+                if arg == 0 {
+                    return Err(InvalidArgument);
+                }
+                let mut lock: Flock = Default::default();
+                either_copyin(&mut lock, VirtAddr::User(arg))?;
+                if lock.l_type == flock::RDLCK && !self.readable {
+                    return Err(InvalidArgument);
+                }
+                if lock.l_type == flock::WRLCK && !self.writable {
+                    return Err(InvalidArgument);
+                }
+                let (dev, inum) = self.lock_key().ok_or(InvalidArgument)?;
+                let pid = Cpus::myproc().unwrap().pid();
+                fcntl::set_lock(dev, inum, pid, &lock)?;
+                return Ok(0);
             }
             SetCloexec => self.cloexec = true,
             SetNonblock => self.nonblock = true,

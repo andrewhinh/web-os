@@ -16,7 +16,7 @@ use crate::{
     array,
     defs::AsBytes,
     exec::exec,
-    fcntl::{FcntlCmd, OMode},
+    fcntl::{self, FcntlCmd, OMode},
     file::{FTABLE, FType, File},
     fs::{self, Path},
     log::LOG,
@@ -654,7 +654,12 @@ impl SysCalls {
         {
             let mut fd = 0;
             File::from_arg(0, &mut fd)?;
-            let _f = Cpus::myproc().unwrap().data_mut().ofile[fd].take().unwrap();
+            let f = Cpus::myproc().unwrap().data_mut().ofile[fd].take().unwrap();
+            if let Some((dev, inum)) = f.lock_key() {
+                let pid = Cpus::myproc().unwrap().pid();
+                fcntl::clear_locks(dev, inum, pid);
+            }
+            let _f = f;
             drop(_f);
             Ok(())
         }

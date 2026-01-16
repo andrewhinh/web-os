@@ -7,7 +7,7 @@ use ulib::{
     pipe, print, println,
     sys::{
         self, Error,
-        fcntl::{FcntlCmd, fd, omode},
+        fcntl::{FcntlCmd, Flock, fd, flock, omode},
     },
 };
 
@@ -58,6 +58,8 @@ fn main() -> sys::Result<()> {
         Err(e) => eprintln!("test_fcntl: pipe read err={}", e),
     }
 
+    test_locks(fd_num)?;
+
     Ok(())
 }
 
@@ -87,4 +89,46 @@ fn print_fd(label: &str, flags: usize) {
     } else {
         println!("none");
     }
+}
+
+fn test_locks(fd_num: usize) -> sys::Result<()> {
+    let mut lock = Flock {
+        l_type: flock::WRLCK,
+        ..Default::default()
+    };
+    sys::fcntl(fd_num, FcntlCmd::SetLk, &lock as *const _ as usize)?;
+    println!("test_fcntl: set write lock ok");
+
+    let pid = sys::fork()?;
+    if pid == 0 {
+        let try_lock = Flock {
+            l_type: flock::RDLCK,
+            ..Default::default()
+        };
+        match sys::fcntl(fd_num, FcntlCmd::SetLk, &try_lock as *const _ as usize) {
+            Err(Error::ResourceBusy) => println!("test_fcntl: child lock busy ok"),
+            Ok(_) => println!("test_fcntl: child lock unexpected ok"),
+            Err(e) => eprintln!("test_fcntl: child lock err={}", e),
+        }
+
+        let mut probe = Flock {
+            l_type: flock::WRLCK,
+            ..Default::default()
+        };
+        match sys::fcntl(fd_num, FcntlCmd::GetLk, &mut probe as *mut _ as usize) {
+            Ok(_) => println!(
+                "test_fcntl: child getlk type={} pid={}",
+                probe.l_type, probe.l_pid
+            ),
+            Err(e) => eprintln!("test_fcntl: child getlk err={}", e),
+        }
+        return Ok(());
+    }
+
+    let mut st = 0;
+    let _ = sys::wait(&mut st);
+    lock.l_type = flock::UNLCK;
+    sys::fcntl(fd_num, FcntlCmd::SetLk, &lock as *const _ as usize)?;
+    println!("test_fcntl: unlock ok");
+    Ok(())
 }

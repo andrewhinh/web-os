@@ -1,3 +1,14 @@
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use alloc::vec::Vec;
+
+use crate::defs::AsBytes;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::error::{Error::InvalidArgument, Error::ResourceBusy, Result};
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::spinlock::Mutex;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::sync::LazyLock;
+
 pub mod omode {
     pub const RDONLY: usize = 0x000;
     pub const WRONLY: usize = 0x001;
@@ -12,6 +23,24 @@ pub mod omode {
 pub mod fd {
     pub const CLOEXEC: usize = 0x1;
 }
+
+pub mod flock {
+    pub const UNLCK: usize = 0;
+    pub const RDLCK: usize = 1;
+    pub const WRLCK: usize = 2;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flock {
+    pub l_type: usize,
+    pub l_whence: usize,
+    pub l_start: usize,
+    pub l_len: usize,
+    pub l_pid: usize,
+}
+
+unsafe impl AsBytes for Flock {}
 
 pub struct OMode {
     read: bool,
@@ -131,6 +160,8 @@ pub enum FcntlCmd {
     SetCloexec = 5,
     SetNonblock = 6,
     ClearNonblock = 7,
+    GetLk = 8,
+    SetLk = 9,
     Invalid,
 }
 
@@ -144,7 +175,124 @@ impl FcntlCmd {
             5 => Self::SetCloexec,
             6 => Self::SetNonblock,
             7 => Self::ClearNonblock,
+            8 => Self::GetLk,
+            9 => Self::SetLk,
             _ => Self::Invalid,
         }
     }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockKind {
+    Read,
+    Write,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Clone, Copy, Debug)]
+struct LockEntry {
+    dev: u32,
+    inum: u32,
+    kind: LockKind,
+    pid: usize,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Debug, Default)]
+struct LockTable {
+    entries: Vec<LockEntry>,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+impl LockTable {
+    fn conflict(&self, dev: u32, inum: u32, pid: usize, kind: LockKind) -> Option<LockEntry> {
+        for entry in &self.entries {
+            if entry.dev != dev || entry.inum != inum || entry.pid == pid {
+                continue;
+            }
+            match (kind, entry.kind) {
+                (LockKind::Read, LockKind::Write) | (LockKind::Write, _) => return Some(*entry),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn clear_pid(&mut self, dev: u32, inum: u32, pid: usize) {
+        self.entries
+            .retain(|entry| !(entry.dev == dev && entry.inum == inum && entry.pid == pid));
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+static FILE_LOCKS: LazyLock<Mutex<LockTable>> =
+    LazyLock::new(|| Mutex::new(LockTable::default(), "file_locks"));
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+fn lock_kind(lock_type: usize) -> Result<Option<LockKind>> {
+    match lock_type {
+        flock::UNLCK => Ok(None),
+        flock::RDLCK => Ok(Some(LockKind::Read)),
+        flock::WRLCK => Ok(Some(LockKind::Write)),
+        _ => Err(InvalidArgument),
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+fn validate_flock(lock: &Flock) -> Result<()> {
+    if lock.l_whence != 0 || lock.l_start != 0 || lock.l_len != 0 {
+        return Err(InvalidArgument);
+    }
+    let _ = lock_kind(lock.l_type)?;
+    Ok(())
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub fn set_lock(dev: u32, inum: u32, pid: usize, lock: &Flock) -> Result<()> {
+    validate_flock(lock)?;
+    let kind = lock_kind(lock.l_type)?;
+    let mut guard = FILE_LOCKS.lock();
+    guard.clear_pid(dev, inum, pid);
+    let Some(kind) = kind else {
+        return Ok(());
+    };
+    if guard.conflict(dev, inum, pid, kind).is_some() {
+        return Err(ResourceBusy);
+    }
+    guard.entries.push(LockEntry {
+        dev,
+        inum,
+        kind,
+        pid,
+    });
+    Ok(())
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub fn get_lock(dev: u32, inum: u32, pid: usize, lock: &mut Flock) -> Result<()> {
+    validate_flock(lock)?;
+    let Some(kind) = lock_kind(lock.l_type)? else {
+        lock.l_type = flock::UNLCK;
+        lock.l_pid = 0;
+        return Ok(());
+    };
+    let guard = FILE_LOCKS.lock();
+    if let Some(entry) = guard.conflict(dev, inum, pid, kind) {
+        lock.l_type = match entry.kind {
+            LockKind::Read => flock::RDLCK,
+            LockKind::Write => flock::WRLCK,
+        };
+        lock.l_pid = entry.pid;
+    } else {
+        lock.l_type = flock::UNLCK;
+        lock.l_pid = 0;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub fn clear_locks(dev: u32, inum: u32, pid: usize) {
+    let mut guard = FILE_LOCKS.lock();
+    guard.clear_pid(dev, inum, pid);
 }

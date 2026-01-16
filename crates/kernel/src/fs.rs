@@ -711,6 +711,14 @@ impl Inode {
     pub fn is_none(&self) -> bool {
         self.ip.is_none()
     }
+
+    pub fn dev(&self) -> u32 {
+        self.ip.as_ref().unwrap().dev
+    }
+
+    pub fn inum(&self) -> u32 {
+        self.ip.as_ref().unwrap().inum
+    }
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]

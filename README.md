@@ -36,7 +36,7 @@ act push --bind                                  # test CI
 - [ ] tty/job control: pgrp + sessions + controlling TTY + fg/bg
 - [x] adv I/O: nonblock + poll/select
 - [x] fcntl: F_GETFL/F_SETFL + FD_CLOEXEC
-- [ ] file locks: fcntl F_SETLK/F_GETLK
+- [x] file locks: fcntl F_SETLK/F_GETLK
 - [ ] raw block device file: user fsck reads disk
 - [ ] fs names/attrs: rename + symlinks + permissions + umask
 - [ ] fs durability: fsync + timestamps
