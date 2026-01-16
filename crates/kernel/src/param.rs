@@ -11,3 +11,5 @@ pub const LOGSIZE: usize = MAXOPBLOCKS * 3; // max data blocks in on-disk log
 pub const NBUF: usize = MAXOPBLOCKS * 3; // size of disk block cache
 pub const FSSIZE: usize = 200000; // size of file system in blocks
 pub const MAXPATH: usize = 128; // maximum file path name
+pub const NSHM: usize = 32; // max shared memory segments
+pub const NSEM: usize = 64; // max IPC semaphores

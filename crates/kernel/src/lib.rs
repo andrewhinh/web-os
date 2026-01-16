@@ -70,6 +70,8 @@ pub mod fs;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod imsic;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod ipc;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod kalloc;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod list;

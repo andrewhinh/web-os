@@ -6,68 +6,102 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Semaphore {
-    mutex: Mutex<isize>,
+    mutex: Mutex<SemState>,
     cond: Condvar,
     max: isize,
 }
 
+#[derive(Debug)]
+struct SemState {
+    count: isize,
+    closed: bool,
+}
+
 impl Semaphore {
     pub fn new(max: isize, name: &'static str) -> Self {
+        debug_assert!(max >= 0);
         Self {
-            mutex: Mutex::new(0, name),
+            mutex: Mutex::new(
+                SemState {
+                    count: max,
+                    closed: false,
+                },
+                name,
+            ),
             cond: Condvar::new(),
             max,
         }
     }
 
+    pub fn new_with_count(count: isize, max: isize, name: &'static str) -> Result<Self> {
+        if max < 0 || count < 0 || count > max {
+            return Err(InvalidArgument);
+        }
+        Ok(Self {
+            mutex: Mutex::new(
+                SemState {
+                    count,
+                    closed: false,
+                },
+                name,
+            ),
+            cond: Condvar::new(),
+            max,
+        })
+    }
+
     pub fn wait(&self) -> Result<()> {
-        let mut cnt = self.mutex.lock();
+        let mut state = self.mutex.lock();
         loop {
-            if *cnt == -1 {
+            if state.closed {
                 return Err(InvalidArgument);
             }
-            if *cnt >= self.max {
-                cnt = self.cond.wait(cnt);
-            } else {
-                break;
+            if state.count == 0 {
+                state = self.cond.wait(state);
+                continue;
             }
+            state.count -= 1;
+            break;
         }
-        *cnt += 1;
         Ok(())
     }
 
     pub fn try_wait(&self) -> Result<bool> {
-        let mut cnt = self.mutex.lock();
-        if *cnt == -1 {
+        let mut state = self.mutex.lock();
+        if state.closed {
             return Err(InvalidArgument);
         }
-        if *cnt >= self.max {
+        if state.count == 0 {
             return Ok(false);
         }
-        *cnt += 1;
+        state.count -= 1;
         Ok(true)
     }
 
     pub fn can_wait(&self) -> Result<bool> {
-        let cnt = self.mutex.lock();
-        if *cnt == -1 {
+        let state = self.mutex.lock();
+        if state.closed {
             return Err(InvalidArgument);
         }
-        Ok(*cnt < self.max)
+        Ok(state.count > 0)
     }
 
-    pub fn post(&self) {
-        let mut cnt = self.mutex.lock();
-        assert!(*cnt > 0);
-        *cnt -= 1;
-        if *cnt <= self.max {
-            self.cond.notify_all();
+    pub fn post(&self) -> Result<()> {
+        let mut state = self.mutex.lock();
+        if state.closed {
+            return Err(InvalidArgument);
         }
+        if state.count == self.max {
+            return Err(InvalidArgument);
+        }
+        state.count += 1;
+        self.cond.notify_all();
+        Ok(())
     }
 
     pub fn close(&self) {
-        let mut cnt = self.mutex.lock();
-        *cnt = -1;
+        let mut state = self.mutex.lock();
+        state.closed = true;
         self.cond.notify_all();
     }
 }

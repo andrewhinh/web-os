@@ -13,6 +13,7 @@ use crate::error::{Error::*, Result};
 use crate::exec::flags2perm;
 use crate::file::File;
 use crate::fs::{self, Inode, Path};
+use crate::ipc::ShmSegment;
 use crate::log::LOG;
 use crate::memlayout::{STACK_PAGE_NUM, TRAMPOLINE, kstack, trapframe_va, user_mem_top};
 use crate::mmap::{MAP_ANON, MAP_PRIVATE, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
@@ -381,6 +382,7 @@ pub struct Vma {
     pub flags: usize, // MAP_*
     pub file: Option<File>,
     pub file_off: usize,
+    pub shm: Option<Arc<ShmSegment>>,
 }
 
 impl Vma {
@@ -420,6 +422,10 @@ impl Vma {
 
     fn is_anon(&self) -> bool {
         (self.flags & MAP_ANON) != 0
+    }
+
+    fn is_shm(&self) -> bool {
+        self.shm.is_some()
     }
 }
 
@@ -868,7 +874,7 @@ impl Default for ProcData {
 }
 
 impl ProcData {
-    fn alloc_mmap_va(&mut self, sz: usize, len: usize) -> Result<UVAddr> {
+    pub(crate) fn alloc_mmap_va(&mut self, sz: usize, len: usize) -> Result<UVAddr> {
         let len_pg = pgroundup(len);
         if len_pg == 0 {
             return Err(InvalidArgument);
@@ -1276,6 +1282,7 @@ pub fn fork() -> Result<usize> {
     c_data.mmap_base = p_data.mmap_base;
     c_data.vmas = p_data.vmas.clone();
     for v in c_data.vmas.iter() {
+        let is_shm = v.is_shm();
         let mut va = v.start;
         while va < v.end_pg() {
             if let Some(pte) = p_uvm.walk(va, false)
@@ -1284,17 +1291,23 @@ pub fn fork() -> Result<usize> {
                 && pte.is_u()
             {
                 let pa = pte.to_pa();
-                let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
-                unsafe {
-                    *mem = (*(pa.into_usize() as *mut Page)).clone();
-                }
-                if let Err(err) = c_uvm.mappages(va, (mem as usize).into(), PGSIZE, pte.flags()) {
+                if is_shm {
+                    c_uvm.mappages(va, pa, PGSIZE, pte.flags())?;
+                    crate::kalloc::page_ref_inc(pa.into_usize());
+                } else {
+                    let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;
                     unsafe {
-                        let _pg = Box::from_raw(mem);
+                        *mem = (*(pa.into_usize() as *mut Page)).clone();
                     }
-                    return Err(err);
+                    if let Err(err) = c_uvm.mappages(va, (mem as usize).into(), PGSIZE, pte.flags())
+                    {
+                        unsafe {
+                            let _pg = Box::from_raw(mem);
+                        }
+                        return Err(err);
+                    }
+                    crate::kalloc::page_ref_init(mem as usize);
                 }
-                crate::kalloc::page_ref_init(mem as usize);
             }
             va += PGSIZE;
         }
@@ -1682,6 +1695,7 @@ pub fn mmap(
         flags,
         file,
         file_off: offset,
+        shm: None,
     });
 
     Ok(start.into_usize())
@@ -1719,6 +1733,10 @@ pub fn munmap(addr: usize, len: usize) -> Result<()> {
             if ov_start >= ov_end {
                 i += 1;
                 continue;
+            }
+
+            if v.is_shm() && (ov_start != v_start || ov_end != v_end) {
+                return Err(InvalidArgument);
             }
 
             munmap_vma_range(uvm, &v, ov_start, ov_end - ov_start, &mut writebacks)?;
@@ -1893,6 +1911,16 @@ pub fn handle_user_page_fault(fault_addr: usize, cause: Exception) -> Result<()>
         {
             return Err(BadVirtAddr);
         }
+    }
+
+    if let Some(shm) = v.shm.as_ref() {
+        let page_idx = (va - v.start) / PGSIZE;
+        let pa = shm.page_pa(page_idx)?;
+        let mut as_inner = aspace.inner.lock();
+        let uvm = as_inner.uvm.as_mut().unwrap();
+        uvm.mappages(va, pa.into(), PGSIZE, v.perm())?;
+        crate::kalloc::page_ref_inc(pa);
+        return Ok(());
     }
 
     let mem = unsafe { Page::try_new_zeroed() }.ok_or(OutOfMemory)?;

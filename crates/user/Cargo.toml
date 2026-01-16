@@ -139,6 +139,11 @@ name = "_test_signal"
 path = "src/bin/test_signal.rs"
 test = false
 
+[[bin]]
+name = "_test_ipc"
+path = "src/bin/test_ipc.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

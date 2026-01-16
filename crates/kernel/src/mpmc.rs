@@ -86,7 +86,7 @@ impl<T: Debug> Receiver<T> {
         let mut buf = self.buf.lock();
         loop {
             if let Some(data) = buf.pop_front() {
-                self.sem.post();
+                self.sem.post()?;
                 break Ok(data);
             }
             if self.scnt.load(Ordering::Relaxed) > 0 {
@@ -100,7 +100,7 @@ impl<T: Debug> Receiver<T> {
     pub fn try_recv(&self) -> Result<T> {
         let mut buf = self.buf.lock();
         if let Some(data) = buf.pop_front() {
-            self.sem.post();
+            self.sem.post()?;
             return Ok(data);
         }
         if self.scnt.load(Ordering::Relaxed) > 0 {

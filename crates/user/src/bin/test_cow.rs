@@ -4,6 +4,7 @@ use ulib::{eprintln, println, sys};
 
 const PGSIZE: usize = 4096;
 const PAGES: usize = 256;
+const WRITE_PAGES: usize = 8;
 
 fn main() {
     let pages = PAGES;
@@ -33,7 +34,7 @@ fn main() {
         Ok(0) => {
             let _ = sys::close(p2c_w);
             let _ = sys::close(c2p_r);
-            child_detect(mem, p2c_r, c2p_w)
+            child_detect(mem, pages, p2c_r, c2p_w)
         }
         Ok(_) => {
             let _ = sys::close(p2c_r);
@@ -87,13 +88,16 @@ fn main() {
     }
 }
 
-fn child_detect(mem: *mut u8, p2c_r: usize, c2p_w: usize) -> ! {
+fn child_detect(mem: *mut u8, pages: usize, p2c_r: usize, c2p_w: usize) -> ! {
     let mut cmd = [0u8; 1];
     if sys::read(p2c_r, &mut cmd).unwrap_or(0) != 1 || cmd[0] != b'w' {
         sys::exit(1);
     }
+    let writes = core::cmp::min(pages, WRITE_PAGES);
     unsafe {
-        *mem.add(0) = 2; // should allocate 1 page if COW
+        for i in 0..writes {
+            *mem.add(i * PGSIZE) = 2; // should allocate pages if COW
+        }
     }
     let _ = sys::write(c2p_w, &[b'a']);
     if sys::read(p2c_r, &mut cmd).unwrap_or(0) != 1 || cmd[0] != b'x' {

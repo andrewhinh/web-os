@@ -19,6 +19,7 @@ use crate::{
     fcntl::{self, FcntlCmd, OMode},
     file::{FTABLE, FType, File},
     fs::{self, Path},
+    ipc,
     log::LOG,
     param::{MAXARG, MAXPATH, NOFILE},
     pipe::Pipe,
@@ -71,6 +72,15 @@ pub enum SysCalls {
     Sigaction = 35,
     Sigreturn = 36,
     Setitimer = 37,
+    ShmCreate = 38,
+    ShmAttach = 39,
+    ShmDetach = 40,
+    ShmDestroy = 41,
+    SemCreate = 42,
+    SemWait = 43,
+    SemTryWait = 44,
+    SemPost = 45,
+    SemClose = 46,
     Invalid = 0,
 }
 
@@ -167,6 +177,15 @@ impl SysCalls {
         ),
         (Fn::U(Self::sigreturn), "()"),
         (Fn::I(Self::setitimer), "(initial: usize, interval: usize)"),
+        (Fn::I(Self::shmcreate), "(size: usize)"),
+        (Fn::I(Self::shmattach), "(id: usize, prot: usize)"),
+        (Fn::U(Self::shmdetach), "(addr: usize)"),
+        (Fn::U(Self::shmdestroy), "(id: usize)"),
+        (Fn::I(Self::semcreate), "(value: usize)"),
+        (Fn::U(Self::semwait), "(id: usize)"),
+        (Fn::I(Self::semtrywait), "(id: usize)"),
+        (Fn::U(Self::sempost), "(id: usize)"),
+        (Fn::U(Self::semclose), "(id: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -593,6 +612,97 @@ impl SysCalls {
             let initial = argraw(0);
             let interval = argraw(1);
             setitimer(initial, interval)
+        }
+    }
+
+    pub fn shmcreate() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let size = argraw(0);
+            ipc::shm_create(size)
+        }
+    }
+
+    pub fn shmattach() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            let prot = argraw(1);
+            ipc::shm_attach(id, prot)
+        }
+    }
+
+    pub fn shmdetach() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let addr = argraw(0);
+            ipc::shm_detach(addr)
+        }
+    }
+
+    pub fn shmdestroy() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            ipc::shm_destroy(id)
+        }
+    }
+
+    pub fn semcreate() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let value = argraw(0);
+            ipc::sem_create(value)
+        }
+    }
+
+    pub fn semwait() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            ipc::sem_wait(id)
+        }
+    }
+
+    pub fn semtrywait() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            ipc::sem_try_wait(id)
+        }
+    }
+
+    pub fn sempost() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            ipc::sem_post(id)
+        }
+    }
+
+    pub fn semclose() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let id = argraw(0);
+            ipc::sem_close(id)
         }
     }
 
@@ -1065,6 +1175,15 @@ impl SysCalls {
             35 => Self::Sigaction,
             36 => Self::Sigreturn,
             37 => Self::Setitimer,
+            38 => Self::ShmCreate,
+            39 => Self::ShmAttach,
+            40 => Self::ShmDetach,
+            41 => Self::ShmDestroy,
+            42 => Self::SemCreate,
+            43 => Self::SemWait,
+            44 => Self::SemTryWait,
+            45 => Self::SemPost,
+            46 => Self::SemClose,
             _ => Self::Invalid,
         }
     }

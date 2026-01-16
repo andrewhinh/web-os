@@ -26,6 +26,7 @@ pub mod stdio;
 pub mod env;
 pub mod fs;
 pub mod io;
+pub mod ipc;
 pub mod mutex;
 pub mod path;
 pub mod pipe;
