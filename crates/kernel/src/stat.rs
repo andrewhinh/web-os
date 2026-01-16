@@ -6,6 +6,7 @@ pub enum FileType {
     Dir = 1,
     File = 2,
     Device = 3,
+    Symlink = 4,
 }
 
 #[derive(Default, Debug, Clone, Copy)]

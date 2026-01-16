@@ -1,5 +1,9 @@
 #[cfg(all(target_os = "none", feature = "kernel"))]
+use alloc::string::String;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 use alloc::sync::Arc;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use alloc::vec::Vec;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use core::mem::size_of;
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -15,7 +19,7 @@ use crate::file::Major;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::log::LOG;
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::param::{NINODE, ROOTDEV};
+use crate::param::{MAXPATH, NINODE, ROOTDEV};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::proc::{Cpus, either_copyin, either_copyout};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -102,6 +106,8 @@ pub const BPB: u32 = (BSIZE * 8) as u32;
 
 // Directory is a file containing a sequence of dirent structures.
 pub const DIRSIZ: usize = 14;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+const SYMLINK_MAX_DEPTH: usize = 10;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -913,6 +919,19 @@ pub fn link(old: &Path, new: &Path) -> Result<()> {
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub fn symlink(target: &Path, linkpath: &Path) -> Result<()> {
+    let ip = create(linkpath, FileType::Symlink, 0, 0)?;
+    let mut ip_guard = ip.lock();
+    let bytes = target.inner.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAXPATH {
+        return Err(InvalidArgument);
+    }
+    ip_guard.write(VirtAddr::Kernel(bytes.as_ptr() as usize), 0, bytes.len())?;
+    ip_guard.touch_mtime_ctime();
+    Ok(())
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub fn unlink(path: &Path) -> Result<()> {
     let de: DirEnt = Default::default();
     let mut off: u32 = 0;
@@ -1058,12 +1077,23 @@ impl Path {
     // # Safety:
     // call inside a transaction.
     pub fn namex(path: &Path, parent: bool) -> Result<(&str, Inode)> {
+        let trimmed = path.inner.trim_matches('/');
+        let orig_name = if trimmed.is_empty() {
+            "/"
+        } else {
+            match trimmed.rsplit_once('/') {
+                Some((_, name)) => name,
+                None => trimmed,
+            }
+        };
         let mut ip = match path.inner.get(0..1) {
             Some("/") => ITABLE.get(ROOTDEV, ROOTINO)?,
             _ => Cpus::myproc().unwrap().data().cwd.as_ref().unwrap().dup(),
         };
 
         let mut path = path;
+        let mut link_paths: Vec<String> = Vec::new();
+        let mut link_depth = 0usize;
         loop {
             let mut guard = ip.lock();
             if guard.itype != FileType::Dir {
@@ -1073,18 +1103,82 @@ impl Path {
                 (Some(name), Some(npath)) => {
                     let nip = guard.dirlookup(name, None)?;
                     SleepLock::unlock(guard);
+                    let mut nip_guard = nip.lock();
+                    if nip_guard.itype == FileType::Symlink {
+                        if link_depth >= SYMLINK_MAX_DEPTH {
+                            return Err(TooManyLinks);
+                        }
+                        link_depth += 1;
+                        let target_len = nip_guard.size() as usize;
+                        if target_len == 0 || target_len > MAXPATH {
+                            return Err(InvalidArgument);
+                        }
+                        let mut target_buf = [0u8; MAXPATH];
+                        let read_len = nip_guard.read(
+                            VirtAddr::Kernel(target_buf.as_mut_ptr() as usize),
+                            0,
+                            target_len,
+                        )?;
+                        SleepLock::unlock(nip_guard);
+                        let target =
+                            core::str::from_utf8(&target_buf[..read_len]).or(Err(Utf8Error))?;
+                        let mut new_path = String::new();
+                        new_path.push_str(target);
+                        if !new_path.ends_with('/') {
+                            new_path.push('/');
+                        }
+                        new_path.push_str(&npath.inner);
+                        link_paths.push(new_path);
+                        let path_str = link_paths.last().unwrap();
+                        if path_str.starts_with('/') {
+                            ip = ITABLE.get(ROOTDEV, ROOTINO)?;
+                        }
+                        path = Path::new(path_str);
+                        continue;
+                    }
+                    SleepLock::unlock(nip_guard);
                     ip = nip;
                     path = npath;
                     continue;
                 }
                 (Some(name), None) if !parent => {
-                    let ip = guard.dirlookup(name, None)?;
+                    let nip = guard.dirlookup(name, None)?;
                     SleepLock::unlock(guard);
-                    break Ok((name, ip));
+                    let mut nip_guard = nip.lock();
+                    if nip_guard.itype == FileType::Symlink {
+                        if link_depth >= SYMLINK_MAX_DEPTH {
+                            return Err(TooManyLinks);
+                        }
+                        link_depth += 1;
+                        let target_len = nip_guard.size() as usize;
+                        if target_len == 0 || target_len > MAXPATH {
+                            return Err(InvalidArgument);
+                        }
+                        let mut target_buf = [0u8; MAXPATH];
+                        let read_len = nip_guard.read(
+                            VirtAddr::Kernel(target_buf.as_mut_ptr() as usize),
+                            0,
+                            target_len,
+                        )?;
+                        SleepLock::unlock(nip_guard);
+                        let target =
+                            core::str::from_utf8(&target_buf[..read_len]).or(Err(Utf8Error))?;
+                        let mut new_path = String::new();
+                        new_path.push_str(target);
+                        link_paths.push(new_path);
+                        let path_str = link_paths.last().unwrap();
+                        if path_str.starts_with('/') {
+                            ip = ITABLE.get(ROOTDEV, ROOTINO)?;
+                        }
+                        path = Path::new(path_str);
+                        continue;
+                    }
+                    SleepLock::unlock(nip_guard);
+                    break Ok((orig_name, nip));
                 }
-                (Some(name), None) => {
+                (Some(_name), None) => {
                     SleepLock::unlock(guard);
-                    break Ok((name, ip));
+                    break Ok((orig_name, ip));
                 }
                 _ => {
                     if let Some("/") = path.inner.get(..) {

@@ -373,6 +373,10 @@ pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> sys::R
     sys::link(original.as_ref().to_str(), link.as_ref().to_str())
 }
 
+pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(target: P, link: Q) -> sys::Result<()> {
+    sys::symlink(target.as_ref().to_str(), link.as_ref().to_str())
+}
+
 pub fn remove_file<P: AsRef<Path>>(path: P) -> sys::Result<()> {
     sys::unlink(path.as_ref().to_str())
 }

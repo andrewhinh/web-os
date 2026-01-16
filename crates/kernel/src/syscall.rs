@@ -82,6 +82,7 @@ pub enum SysCalls {
     SemPost = 45,
     SemClose = 46,
     Fsync = 47,
+    Symlink = 48,
     Invalid = 0,
 }
 
@@ -188,6 +189,7 @@ impl SysCalls {
         (Fn::U(Self::sempost), "(id: usize)"),
         (Fn::U(Self::semclose), "(id: usize)"),
         (Fn::U(Self::fsync), "(fd: usize)"),
+        (Fn::U(Self::symlink), "(target: &str, linkpath: &str)"),
     ];
 
     pub fn invalid() -> ! {
@@ -884,6 +886,26 @@ impl SysCalls {
         }
     }
 
+    pub fn symlink() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let mut target = [0; MAXPATH];
+            let mut linkpath = [0; MAXPATH];
+            let target = Path::from_arg(0, &mut target)?;
+            let linkpath = Path::from_arg(1, &mut linkpath)?;
+
+            let res;
+            {
+                LOG.begin_op();
+                res = fs::symlink(target, linkpath);
+                LOG.end_op();
+            }
+            res
+        }
+    }
+
     pub fn unlink() -> Result<()> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(());
@@ -1198,6 +1220,7 @@ impl SysCalls {
             45 => Self::SemPost,
             46 => Self::SemClose,
             47 => Self::Fsync,
+            48 => Self::Symlink,
             _ => Self::Invalid,
         }
     }
