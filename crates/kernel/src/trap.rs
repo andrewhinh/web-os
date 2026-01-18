@@ -4,7 +4,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     imsic,
     kernelvec::kernelvec,
-    memlayout::{STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ},
+    memlayout::{
+        STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ, VIRTIO2_IRQ, VIRTIO3_IRQ,
+        VIRTIO4_IRQ,
+    },
     proc::{self, Cpus, ProcState},
     riscv::{
         registers::{scause::*, *},
@@ -16,6 +19,8 @@ use crate::{
     trampoline::trampoline,
     uart::UART,
     virtio_disk::DISK,
+    virtio_gpu::GPU,
+    virtio_input::{KBD, MOUSE},
     virtio_net::NET,
     vm::{Addr, UVAddr},
 };
@@ -309,6 +314,9 @@ fn devintr(intr: Interrupt) -> Option<Intr> {
                     UART0_IRQ => UART.intr(),
                     VIRTIO0_IRQ => DISK.intr(),
                     VIRTIO1_IRQ => NET.intr(),
+                    VIRTIO2_IRQ => GPU.lock().intr(),
+                    VIRTIO3_IRQ => KBD.intr(),
+                    VIRTIO4_IRQ => MOUSE.intr(),
                     _ => println!("unexpected msi msg={}", msg),
                 }
             }

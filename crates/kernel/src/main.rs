@@ -6,11 +6,11 @@ extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernel::{
-    aplic, bio, console, kalloc, kmain, net, null,
+    aplic, bio, console, framebuffer, kalloc, kmain, net, null,
     param::NCPU,
     println,
     proc::{self, Cpus, scheduler, user_init},
-    task, trap, uart, virtio_disk, virtio_net, vm,
+    task, trap, uart, virtio_disk, virtio_input, virtio_net, vm,
 };
 
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -35,6 +35,8 @@ extern "C" fn main() -> ! {
         aplic::init(); // set up interrupt controller (APLIC -> IMSIC MSIs)
         bio::init(); // buffer cache
         virtio_disk::init(); // emulated hard disk
+        virtio_input::init();
+        framebuffer::init();
         virtio_net::init(); // virtio net
         net::init(); // net stack
         for cpu in 0..NCPU {

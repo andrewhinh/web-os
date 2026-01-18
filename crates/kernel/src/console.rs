@@ -1,5 +1,5 @@
 // Console input and output, to the uart.
-// Reads are line at a time.
+// Reads are raw byte streams.
 // Implements special input characters:
 //   newline -- end of line
 //   control-h -- backspace
@@ -11,6 +11,7 @@ use core::num::Wrapping;
 
 use crate::error::{Error::*, Result};
 use crate::file::{DEVSW, Device, Major};
+use crate::framebuffer;
 use crate::proc::{Cpus, dump, either_copyin, either_copyout, kill_pgrp, sleep, wakeup};
 use crate::signal::{SIGINT, SIGTSTP};
 use crate::spinlock::Mutex;
@@ -99,12 +100,26 @@ impl Device for Mutex<Cons> {
     // user write()s to the console go here.
     //
     fn write(&self, src: VirtAddr, n: usize, _offset: usize) -> Result<usize> {
-        for i in 0..n {
-            let mut c = 0;
-            either_copyin(&mut c, src + i)?;
-            putc(c)
+        if n == 0 {
+            return Ok(0);
         }
-        Ok(n)
+
+        let mut buf = [0u8; 512];
+        let mut written = 0usize;
+        let mut src = src;
+        while written < n {
+            let m = core::cmp::min(buf.len(), n - written);
+            either_copyin(&mut buf[..m], src)?;
+
+            for &b in &buf[..m] {
+                uart::UART.putc(b);
+            }
+            framebuffer::write(&buf[..m]);
+
+            written += m;
+            src += m;
+        }
+        Ok(written)
     }
 
     fn major(&self) -> Major {
@@ -234,7 +249,7 @@ pub fn set_fg_pgrp(sid: usize, pgid: usize) -> Result<()> {
     Ok(())
 }
 
-// send one character to the uart.
+// send one character to the uart + framebuffer.
 // called by printf, and to echo input characters,
 // but not from write().
 //
@@ -243,7 +258,11 @@ pub fn putc(c: u8) {
         uart::putc_sync(BS);
         uart::putc_sync(b' ');
         uart::putc_sync(BS);
+        framebuffer::putc(BS);
+        framebuffer::putc(b' ');
+        framebuffer::putc(BS);
     } else {
         uart::putc_sync(c);
+        framebuffer::putc(c);
     }
 }

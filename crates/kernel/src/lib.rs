@@ -69,6 +69,8 @@ pub mod exec;
 #[cfg(target_os = "none")]
 pub mod fcntl;
 pub mod file;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod framebuffer;
 pub mod fs;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod imsic;
@@ -103,6 +105,10 @@ pub mod trampoline;
 pub mod trap;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod virtio_disk;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod virtio_gpu;
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod virtio_input;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod virtio_net;
 #[cfg(all(target_os = "none", feature = "kernel"))]
