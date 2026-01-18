@@ -20,7 +20,7 @@ use crate::{
     file::{FTABLE, FType, File},
     fs::{self, Path},
     ipc,
-    log::LOG,
+    log::{LOG, LogCrashStage, set_crash_stage},
     param::{MAXARG, MAXPATH, NOFILE},
     pipe::Pipe,
     poll,
@@ -93,6 +93,7 @@ pub enum SysCalls {
     Setsid = 56,
     Tcgetpgrp = 57,
     Tcsetpgrp = 58,
+    LogCrash = 59,
     Invalid = 0,
 }
 
@@ -213,6 +214,7 @@ impl SysCalls {
         (Fn::I(Self::setsid), "()"),
         (Fn::I(Self::tcgetpgrp), "(fd: usize)"),
         (Fn::U(Self::tcsetpgrp), "(fd: usize, pgid: usize)"),
+        (Fn::U(Self::logcrash), "(stage: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -894,6 +896,18 @@ impl SysCalls {
         }
     }
 
+    pub fn logcrash() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let stage = argraw(0);
+            let stage = LogCrashStage::from_usize(stage).ok_or(InvalidArgument)?;
+            set_crash_stage(stage);
+            Ok(())
+        }
+    }
+
     pub fn link() -> Result<()> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(());
@@ -1401,6 +1415,7 @@ impl SysCalls {
             56 => Self::Setsid,
             57 => Self::Tcgetpgrp,
             58 => Self::Tcsetpgrp,
+            59 => Self::LogCrash,
             _ => Self::Invalid,
         }
     }

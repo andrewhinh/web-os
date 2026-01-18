@@ -17,7 +17,7 @@ use crate::bio::BCACHE;
 use crate::error::{Error::*, Result};
 use crate::file::Major;
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::log::LOG;
+use crate::log::{LOG, take_recovered};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::param::{MAXPATH, NINODE, ROOTDEV};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -141,6 +141,9 @@ pub fn init(dev: u32) {
     let sb = SB.get().unwrap();
     assert!(sb.magic == FSMAGIC, "invalid file system");
     LOG.init();
+    if take_recovered() {
+        println!("fs: journal recovered");
+    }
 }
 
 // Zero a block

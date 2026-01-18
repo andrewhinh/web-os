@@ -1,4 +1,5 @@
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::{
     bio::{BCACHE, BufGuard},
@@ -7,6 +8,7 @@ use crate::{
     proc,
     spinlock::Mutex,
     sync::LazyLock,
+    test::{QemuExitCode, exit_qemu},
 };
 
 // Simple logging that allows concurrent FS system calls.
@@ -33,6 +35,42 @@ use crate::{
 // Log appends are synchronous.
 
 pub static LOG: LazyLock<Mutex<Log>> = LazyLock::new(|| Mutex::new(Log::new(ROOTDEV), "log"));
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum LogCrashStage {
+    None = 0,
+    AfterHeadWrite = 1,
+}
+
+impl LogCrashStage {
+    pub fn from_usize(stage: usize) -> Option<Self> {
+        match stage {
+            0 => Some(Self::None),
+            1 => Some(Self::AfterHeadWrite),
+            _ => None,
+        }
+    }
+}
+
+static LOG_CRASH_STAGE: AtomicUsize = AtomicUsize::new(LogCrashStage::None as usize);
+static LOG_RECOVERED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_crash_stage(stage: LogCrashStage) {
+    LOG_CRASH_STAGE.store(stage as usize, Ordering::SeqCst);
+}
+
+pub fn take_recovered() -> bool {
+    LOG_RECOVERED.swap(false, Ordering::SeqCst)
+}
+
+fn crash_if_armed(stage: LogCrashStage) {
+    if LOG_CRASH_STAGE.swap(LogCrashStage::None as usize, Ordering::SeqCst) == stage as usize {
+        exit_qemu(QemuExitCode::Failed);
+        #[allow(clippy::empty_loop)]
+        loop {}
+    }
+}
 
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
@@ -89,6 +127,9 @@ impl Log {
 
     fn recover(&mut self) {
         self.read_head();
+        if self.lh.n > 0 {
+            LOG_RECOVERED.store(true, Ordering::SeqCst);
+        }
         self.install_trans(true); // if committed, copy from log to disk
         self.lh.n = 0;
         self.write_head(); // clear the log
@@ -121,6 +162,7 @@ impl Log {
         if self.lh.n > 0 {
             self.write_log(); // Write modified blocks from cache to log
             self.write_head(); // Write header to disk -- the real commit
+            crash_if_armed(LogCrashStage::AfterHeadWrite);
             self.install_trans(false); // Now install writes to home locations
             self.lh.n = 0;
             self.write_head();

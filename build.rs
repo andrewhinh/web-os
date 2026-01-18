@@ -22,11 +22,16 @@ fn main() {
     println!("cargo:rerun-if-changed={}", uprogs_src_path.display());
     let readme = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
     assert!(readme.exists(), "README.md not found");
-    let mut mkfs_cmd = Command::new(&mkfs_path);
-    mkfs_cmd.current_dir(&out_dir);
-    mkfs_cmd.arg(fs_img).arg(&readme).args(uprogs);
-    let status = mkfs_cmd.status().expect("mkfs fs.img failed to run");
-    assert!(status.success(), "mkfs fs.img failed: {status}");
+    let force_mkfs = std::env::var("FORCE_MKFS").ok().as_deref() == Some("1");
+    if !force_mkfs && fs_img.exists() {
+        println!("cargo:warning=mkfs: keeping existing fs.img (set FORCE_MKFS=1 to rebuild)");
+    } else {
+        let mut mkfs_cmd = Command::new(&mkfs_path);
+        mkfs_cmd.current_dir(&out_dir);
+        mkfs_cmd.arg(fs_img).arg(&readme).args(uprogs);
+        let status = mkfs_cmd.status().expect("mkfs fs.img failed to run");
+        assert!(status.success(), "mkfs fs.img failed: {status}");
+    }
 
     // linker script for kernel
     println!("cargo:rustc-link-arg-bin=web-os=--script=crates/kernel/kernel.ld");

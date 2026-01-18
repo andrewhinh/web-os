@@ -40,7 +40,7 @@ act push --bind                                  # test CI
 - [x] raw block device file: user fsck reads disk
 - [x] fs names/attrs: rename + symlinks + permissions + umask
 - [x] fs durability: fsync + timestamps
-- [ ] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
+- [x] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [x] sockets: AF_UNIX
 - [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
 - [x] cooperative, event-based scheduler for trusted kernel tasks

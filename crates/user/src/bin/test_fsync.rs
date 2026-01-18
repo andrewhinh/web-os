@@ -1,8 +1,8 @@
 #![no_std]
 
 use ulib::{
-    eprintln,
-    fs::{File, OpenOptions},
+    env, eprintln,
+    fs::{File, OpenOptions, remove_file},
     io::{Read, Write},
     println, sys,
 };
@@ -18,7 +18,44 @@ fn print_meta(label: &str, meta: &ulib::fs::Metadata) {
     );
 }
 
+fn journal_demo() -> sys::Result<()> {
+    const PATH: &str = "/t_journal.txt";
+    const DATA: &[u8] = b"journal-data";
+
+    println!("test_fsync: journal demo");
+
+    if let Ok(mut existing) = File::open(PATH) {
+        let mut buf = [0u8; 32];
+        let n = existing.read(&mut buf)?;
+        if n == DATA.len() && &buf[..n] == DATA {
+            let _ = remove_file(PATH);
+            println!("test_fsync: journal recovered ok, removed {}", PATH);
+        }
+        if n > 0 {
+            eprintln!("test_fsync: journal mismatch n={}", n);
+            return Err(sys::Error::InvalidArgument);
+        }
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(PATH)?;
+    println!("test_fsync: journal phase1 arming crash");
+    sys::logcrash(1)?;
+    let n = file.write(DATA)?;
+    println!("test_fsync: journal wrote n={}", n);
+    file.sync()?;
+    eprintln!("test_fsync: crash did not trigger");
+    Ok(())
+}
+
 fn main() -> sys::Result<()> {
+    if env::args().any(|arg| arg == "--journal") {
+        return journal_demo();
+    }
+
     println!("test_fsync: start");
     let path = "/t_fsync.txt";
 
