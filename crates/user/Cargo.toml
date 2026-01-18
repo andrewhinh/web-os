@@ -154,6 +154,16 @@ name = "_test_fsync"
 path = "src/bin/test_fsync.rs"
 test = false
 
+[[bin]]
+name = "_test_all"
+path = "src/bin/test_all.rs"
+test = false
+
+[[bin]]
+name = "_test_net"
+path = "src/bin/test_net.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

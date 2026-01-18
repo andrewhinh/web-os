@@ -1,4 +1,4 @@
-pub use kernel::socket::{AF_UNIX, SOCK_STREAM};
+pub use kernel::socket::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
 
 use crate::fs::File;
 use crate::sys;

@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     imsic,
     kernelvec::kernelvec,
-    memlayout::{STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ},
+    memlayout::{STACK_PAGE_NUM, TRAMPOLINE, UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ},
     proc::{self, Cpus, ProcState},
     riscv::{
         registers::{scause::*, *},
@@ -16,6 +16,7 @@ use crate::{
     trampoline::trampoline,
     uart::UART,
     virtio_disk::DISK,
+    virtio_net::NET,
     vm::{Addr, UVAddr},
 };
 
@@ -307,6 +308,7 @@ fn devintr(intr: Interrupt) -> Option<Intr> {
                 match msg {
                     UART0_IRQ => UART.intr(),
                     VIRTIO0_IRQ => DISK.intr(),
+                    VIRTIO1_IRQ => NET.intr(),
                     _ => println!("unexpected msi msg={}", msg),
                 }
             }

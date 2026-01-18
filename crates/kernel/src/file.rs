@@ -28,7 +28,7 @@ use crate::proc::{Cpus, either_copyin, either_copyout, kill_pgrp};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::sleeplock::{SleepLock, SleepLockGuard};
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::socket::{self, UnixSocket};
+use crate::socket::{self, InetSocket, UnixSocket};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::spinlock::Mutex;
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -64,6 +64,7 @@ pub enum VFile {
     Inode(FNod),
     Pipe(Pipe),
     Socket(Arc<UnixSocket>),
+    InetSocket(Arc<InetSocket>),
     None,
 }
 
@@ -219,6 +220,7 @@ impl VFile {
             VFile::Inode(f) => f.read(dst, n),
             VFile::Pipe(p) => p.read(dst, n),
             VFile::Socket(s) => s.read(dst, n, false),
+            VFile::InetSocket(s) => s.read(dst, n, false),
             _ => panic!("file read"),
         }
     }
@@ -229,6 +231,7 @@ impl VFile {
             VFile::Inode(f) => f.write(src, n, append),
             VFile::Pipe(p) => p.write(src, n),
             VFile::Socket(s) => s.write(src, n, false),
+            VFile::InetSocket(s) => s.write(src, n, false),
             _ => panic!("file write"),
         }
     }
@@ -246,6 +249,10 @@ impl VFile {
                 either_copyout(addr, &stat)
             }
             VFile::Socket(_) => {
+                stat.ftype = FileType::Socket;
+                either_copyout(addr, &stat)
+            }
+            VFile::InetSocket(_) => {
                 stat.ftype = FileType::Socket;
                 either_copyout(addr, &stat)
             }
@@ -276,6 +283,7 @@ impl File {
                 d.read(dst, n)
             }
             VFile::Socket(s) => s.read(dst, n, self.nonblock),
+            VFile::InetSocket(s) => s.read(dst, n, self.nonblock),
             _ => self.f.as_ref().unwrap().read(dst, n),
         }
     }
@@ -289,6 +297,7 @@ impl File {
             VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
             VFile::Device(d) if d.major() == Major::Console => d.write(src, n),
             VFile::Socket(s) => s.write(src, n, self.nonblock),
+            VFile::InetSocket(s) => s.write(src, n, self.nonblock),
             _ => self.f.as_ref().unwrap().write(src, n, self.append),
         }
     }
@@ -301,6 +310,7 @@ impl File {
             }
             VFile::Pipe(_) => Err(InvalidArgument),
             VFile::Socket(_) => Err(InvalidArgument),
+            VFile::InetSocket(_) => Err(InvalidArgument),
             VFile::None => Err(BadFileDescriptor),
         }
     }
@@ -345,6 +355,9 @@ impl File {
                 }
             }
             VFile::Socket(s) => {
+                revents |= s.poll(events, self.readable, self.writable);
+            }
+            VFile::InetSocket(s) => {
                 revents |= s.poll(events, self.readable, self.writable);
             }
             VFile::None => {}
@@ -407,12 +420,17 @@ impl File {
         socket::validate(domain, stype, protocol)?;
         let mut omode = OMode::new();
         omode.read(true).write(true);
-        FTABLE.alloc(omode, FType::Socket(UnixSocket::new()))
+        match domain {
+            socket::AF_UNIX => FTABLE.alloc(omode, FType::Socket(UnixSocket::new())),
+            socket::AF_INET => FTABLE.alloc(omode, FType::InetSocket(InetSocket::new(stype))),
+            _ => Err(InvalidArgument),
+        }
     }
 
     pub fn bind(&mut self, path: &str) -> Result<()> {
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Socket(s) => s.bind(path),
+            VFile::InetSocket(s) => s.bind(path),
             _ => Err(InvalidArgument),
         }
     }
@@ -420,6 +438,7 @@ impl File {
     pub fn listen(&mut self, backlog: usize) -> Result<()> {
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Socket(s) => s.listen(backlog),
+            VFile::InetSocket(s) => s.listen(backlog),
             _ => Err(InvalidArgument),
         }
     }
@@ -427,6 +446,12 @@ impl File {
     pub fn accept(&mut self) -> Result<File> {
         let stream = match self.f.as_ref().unwrap().as_ref() {
             VFile::Socket(s) => s.accept(self.nonblock)?,
+            VFile::InetSocket(s) => {
+                let sock = s.accept(self.nonblock)?;
+                let mut omode = OMode::new();
+                omode.read(true).write(true).nonblock(self.nonblock);
+                return FTABLE.alloc(omode, FType::InetSocket(sock));
+            }
             _ => return Err(InvalidArgument),
         };
         let mut omode = OMode::new();
@@ -437,6 +462,7 @@ impl File {
     pub fn connect(&mut self, path: &str) -> Result<()> {
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Socket(s) => s.connect(path, self.nonblock),
+            VFile::InetSocket(s) => s.connect(path, self.nonblock),
             _ => Err(InvalidArgument),
         }
     }
@@ -562,6 +588,7 @@ pub enum FType<'a> {
     Node(&'a Path),
     Pipe(Pipe),
     Socket(Arc<UnixSocket>),
+    InetSocket(Arc<InetSocket>),
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -606,6 +633,7 @@ impl FTable {
             }
             FType::Pipe(pi) => VFile::Pipe(pi),
             FType::Socket(sock) => VFile::Socket(sock),
+            FType::InetSocket(sock) => VFile::InetSocket(sock),
         });
 
         let mut guard = self.lock();

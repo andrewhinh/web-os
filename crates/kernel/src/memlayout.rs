@@ -10,6 +10,7 @@ use crate::vm::{KVAddr, VAddr};
 // 0C000000 -- APLIC
 // 10000000 -- uart0
 // 10001000 -- virtio disk
+// 10002000 -- virtio net
 // 80000000 -- boot ROM jumps here in machine mode
 //             -kernel loads the kernel here
 // unused RAM after 80000000.
@@ -31,6 +32,9 @@ pub const UART0_HART: usize = 0;
 pub const VIRTIO0: usize = 0x1000_1000;
 pub const VIRTIO0_IRQ: u32 = 1;
 pub const VIRTIO0_HART: usize = 0;
+pub const VIRTIO1: usize = 0x1000_2000;
+pub const VIRTIO1_IRQ: u32 = 2;
+pub const VIRTIO1_HART: usize = 0;
 
 // core local interrupter (CLINT), which contains the timer
 pub const CLINT: usize = 0x2000000;

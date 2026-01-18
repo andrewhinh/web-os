@@ -42,7 +42,7 @@ act push --bind                                  # test CI
 - [x] fs durability: fsync + timestamps
 - [x] [journaling/crash-consistency](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [x] sockets: AF_UNIX
-- [ ] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
+- [x] net: virtio-net + IPv4/ARP + sockets (TCP/UDP)
 - [x] cooperative, event-based scheduler for trusted kernel tasks
   - [blog_os](https://os.phil-opp.com/async-await/)
   - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)

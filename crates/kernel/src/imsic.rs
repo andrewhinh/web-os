@@ -1,7 +1,7 @@
 use core::arch::asm;
 use core::ptr;
 
-use crate::memlayout::{IMSIC_S, IMSIC_STRIDE, UART0_IRQ, VIRTIO0_IRQ};
+use crate::memlayout::{IMSIC_S, IMSIC_STRIDE, UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ};
 
 // IMSIC CSRs
 const SISELECT: usize = 0x150;
@@ -62,6 +62,7 @@ pub fn init_hart() {
 
     enable_msg(UART0_IRQ as usize);
     enable_msg(VIRTIO0_IRQ as usize);
+    enable_msg(VIRTIO1_IRQ as usize);
 }
 
 // Pop the top pending external interrupt message for S-mode.

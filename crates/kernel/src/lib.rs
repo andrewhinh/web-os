@@ -32,6 +32,8 @@ pub mod memlayout;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod mpmc;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod net;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod null;
 pub mod param;
 pub mod poll;
@@ -102,6 +104,8 @@ pub mod trap;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod virtio_disk;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+pub mod virtio_net;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod vm;
 
 #[macro_export]
@@ -142,6 +146,8 @@ pub extern "C" fn test_main_entry() -> ! {
         aplic::init();
         bio::init();
         virtio_disk::init();
+        virtio_net::init();
+        net::init();
 
         TEST_STARTED.store(true, Ordering::SeqCst);
 

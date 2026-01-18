@@ -1,5 +1,7 @@
 pub const AF_UNIX: usize = 1;
+pub const AF_INET: usize = 2;
 pub const SOCK_STREAM: usize = 1;
+pub const SOCK_DGRAM: usize = 2;
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use alloc::{
@@ -7,11 +9,15 @@ use alloc::{
     string::{String, ToString},
     sync::{Arc, Weak},
 };
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use core::net::{Ipv4Addr, SocketAddrV4};
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::error::{Error::*, Result};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::mpmc::{Receiver, SyncSender, sync_channel};
+#[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::net::{self, TcpListener, TcpSocket, UdpSocket};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::proc::{either_copyin, either_copyout};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -377,9 +383,269 @@ impl Drop for UnixSocket {
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
-pub fn validate(domain: usize, stype: usize, _protocol: usize) -> Result<()> {
-    if domain != AF_UNIX || stype != SOCK_STREAM {
+#[derive(Debug)]
+pub struct InetSocket {
+    inner: Mutex<InetSocketInner>,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Debug)]
+struct InetSocketInner {
+    stype: usize,
+    state: InetState,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Debug)]
+enum InetState {
+    Unbound,
+    Datagram(Arc<UdpSocket>),
+    Stream(Arc<TcpSocket>),
+    Listening(Arc<TcpListener>),
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+impl InetSocket {
+    pub fn new(stype: usize) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(
+                InetSocketInner {
+                    stype,
+                    state: InetState::Unbound,
+                },
+                "inetsock",
+            ),
+        })
+    }
+
+    pub fn bind(self: &Arc<Self>, path: &str) -> Result<()> {
+        let addr = parse_socket_addr(path)?;
+        let ip = *addr.ip();
+        if ip != Ipv4Addr::new(0, 0, 0, 0) && ip != net::local_ip() {
+            return Err(InvalidArgument);
+        }
+        let mut inner = self.inner.lock();
+        match inner.stype {
+            SOCK_DGRAM => {
+                let sock = match &inner.state {
+                    InetState::Datagram(s) => Arc::clone(s),
+                    InetState::Unbound => {
+                        let s = UdpSocket::new();
+                        inner.state = InetState::Datagram(Arc::clone(&s));
+                        s
+                    }
+                    _ => return Err(InvalidArgument),
+                };
+                drop(inner);
+                sock.bind(addr.port())
+            }
+            SOCK_STREAM => {
+                let sock = match &inner.state {
+                    InetState::Stream(s) => Arc::clone(s),
+                    InetState::Unbound => {
+                        let s = TcpSocket::new();
+                        inner.state = InetState::Stream(Arc::clone(&s));
+                        s
+                    }
+                    _ => return Err(InvalidArgument),
+                };
+                drop(inner);
+                sock.bind(addr.port())
+            }
+            _ => Err(InvalidArgument),
+        }
+    }
+
+    pub fn listen(self: &Arc<Self>, backlog: usize) -> Result<()> {
+        let mut inner = self.inner.lock();
+        if inner.stype != SOCK_STREAM {
+            return Err(InvalidArgument);
+        }
+        let stream = match &inner.state {
+            InetState::Stream(s) => Arc::clone(s),
+            _ => return Err(InvalidArgument),
+        };
+        let port = stream.local_addr().ok_or(InvalidArgument)?.port();
+        let listener = TcpListener::new(backlog, port);
+        listener.register()?;
+        inner.state = InetState::Listening(listener);
+        Ok(())
+    }
+
+    pub fn accept(self: &Arc<Self>, nonblock: bool) -> Result<Arc<InetSocket>> {
+        let inner = self.inner.lock();
+        let listener = match &inner.state {
+            InetState::Listening(l) => Arc::clone(l),
+            _ => return Err(InvalidArgument),
+        };
+        drop(inner);
+        let conn = listener.accept(nonblock)?;
+        Ok(Arc::new(Self {
+            inner: Mutex::new(
+                InetSocketInner {
+                    stype: SOCK_STREAM,
+                    state: InetState::Stream(conn),
+                },
+                "inetsock",
+            ),
+        }))
+    }
+
+    pub fn connect(self: &Arc<Self>, path: &str, nonblock: bool) -> Result<()> {
+        let addr = parse_socket_addr(path)?;
+        if *addr.ip() == Ipv4Addr::new(0, 0, 0, 0) {
+            return Err(InvalidArgument);
+        }
+        let mut inner = self.inner.lock();
+        match inner.stype {
+            SOCK_DGRAM => {
+                let sock = match &inner.state {
+                    InetState::Datagram(s) => Arc::clone(s),
+                    InetState::Unbound => {
+                        let s = UdpSocket::new();
+                        inner.state = InetState::Datagram(Arc::clone(&s));
+                        s
+                    }
+                    _ => return Err(InvalidArgument),
+                };
+                drop(inner);
+                sock.connect(addr)
+            }
+            SOCK_STREAM => {
+                let sock = match &inner.state {
+                    InetState::Stream(s) => Arc::clone(s),
+                    InetState::Unbound => {
+                        let s = TcpSocket::new();
+                        inner.state = InetState::Stream(Arc::clone(&s));
+                        s
+                    }
+                    _ => return Err(InvalidArgument),
+                };
+                drop(inner);
+                sock.connect(addr, nonblock)
+            }
+            _ => Err(InvalidArgument),
+        }
+    }
+
+    pub fn read(&self, dst: VirtAddr, n: usize, nonblock: bool) -> Result<usize> {
+        let inner = self.inner.lock();
+        let sock = match &inner.state {
+            InetState::Datagram(s) => InetRead::Datagram(Arc::clone(s)),
+            InetState::Stream(s) => InetRead::Stream(Arc::clone(s)),
+            _ => return Err(InvalidArgument),
+        };
+        drop(inner);
+        match sock {
+            InetRead::Datagram(s) => s.read(dst, n, nonblock),
+            InetRead::Stream(s) => s.read(dst, n, nonblock),
+        }
+    }
+
+    pub fn write(&self, src: VirtAddr, n: usize, nonblock: bool) -> Result<usize> {
+        let inner = self.inner.lock();
+        let sock = match &inner.state {
+            InetState::Datagram(s) => InetWrite::Datagram(Arc::clone(s)),
+            InetState::Stream(s) => InetWrite::Stream(Arc::clone(s)),
+            _ => return Err(InvalidArgument),
+        };
+        drop(inner);
+        match sock {
+            InetWrite::Datagram(s) => s.write(src, n, nonblock),
+            InetWrite::Stream(s) => s.write(src, n, nonblock),
+        }
+    }
+
+    pub fn poll(&self, events: usize, readable: bool, writable: bool) -> usize {
+        let mut revents = 0;
+        let inner = self.inner.lock();
+        match &inner.state {
+            InetState::Datagram(s) => {
+                if readable && events & crate::poll::IN != 0 && s.poll_readable() {
+                    revents |= crate::poll::IN;
+                }
+                if writable && events & crate::poll::OUT != 0 && s.poll_writable() {
+                    revents |= crate::poll::OUT;
+                }
+            }
+            InetState::Stream(s) => {
+                if readable && events & crate::poll::IN != 0 && s.poll_readable() {
+                    revents |= crate::poll::IN;
+                }
+                if writable && events & crate::poll::OUT != 0 && s.poll_writable() {
+                    revents |= crate::poll::OUT;
+                }
+                if readable && s.is_closed() {
+                    revents |= crate::poll::HUP;
+                }
+            }
+            InetState::Listening(_) | InetState::Unbound => {}
+        }
+        revents
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+enum InetRead {
+    Datagram(Arc<UdpSocket>),
+    Stream(Arc<TcpSocket>),
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+enum InetWrite {
+    Datagram(Arc<UdpSocket>),
+    Stream(Arc<TcpSocket>),
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+fn parse_socket_addr(path: &str) -> Result<SocketAddrV4> {
+    let mut parts = path.split(':');
+    let ip_str = parts.next().ok_or(InvalidArgument)?;
+    let port_str = parts.next().ok_or(InvalidArgument)?;
+    if parts.next().is_some() {
         return Err(InvalidArgument);
+    }
+    let port: u16 = port_str.parse().map_err(|_| InvalidArgument)?;
+    let ip = if ip_str.is_empty() {
+        Ipv4Addr::new(0, 0, 0, 0)
+    } else {
+        parse_ipv4(ip_str)?
+    };
+    Ok(SocketAddrV4::new(ip, port))
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+fn parse_ipv4(s: &str) -> Result<Ipv4Addr> {
+    let mut octets = [0u8; 4];
+    let mut idx = 0;
+    for part in s.split('.') {
+        if idx >= 4 {
+            return Err(InvalidArgument);
+        }
+        let val: u8 = part.parse().map_err(|_| InvalidArgument)?;
+        octets[idx] = val;
+        idx += 1;
+    }
+    if idx != 4 {
+        return Err(InvalidArgument);
+    }
+    Ok(Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]))
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+pub fn validate(domain: usize, stype: usize, _protocol: usize) -> Result<()> {
+    match domain {
+        AF_UNIX => {
+            if stype != SOCK_STREAM {
+                return Err(InvalidArgument);
+            }
+        }
+        AF_INET => {
+            if stype != SOCK_STREAM && stype != SOCK_DGRAM {
+                return Err(InvalidArgument);
+            }
+        }
+        _ => return Err(InvalidArgument),
     }
     Ok(())
 }

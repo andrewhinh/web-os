@@ -10,7 +10,7 @@ use crate::error::{Error::*, Result};
 use crate::kalloc;
 use crate::memlayout::{
     APLIC_M, APLIC_S, IMSIC_M, IMSIC_S, KERNBASE, PHYSTOP, SIFIVE_TEST, STACK_PAGE_NUM, TRAMPOLINE,
-    TRAPFRAME, UART0, VIRTIO0, trapframe_va, user_mem_top,
+    TRAPFRAME, UART0, VIRTIO0, VIRTIO1, trapframe_va, user_mem_top,
 };
 use crate::param::NPROC;
 use crate::proc::PROCS;
@@ -787,6 +787,8 @@ impl Kvm {
 
         // virtio mmio disk interface
         self.map(VIRTIO0.into(), VIRTIO0.into(), PGSIZE, PTE_R | PTE_W);
+        // virtio mmio net interface
+        self.map(VIRTIO1.into(), VIRTIO1.into(), PGSIZE, PTE_R | PTE_W);
 
         // APLIC domains and IMSIC interrupt file regions
         self.map(APLIC_M.into(), APLIC_M.into(), 0x8000, PTE_R | PTE_W);

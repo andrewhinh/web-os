@@ -2,6 +2,7 @@ use core::ptr;
 
 use crate::memlayout::{
     APLIC_M, APLIC_S, IMSIC_M, IMSIC_S, UART0_HART, UART0_IRQ, VIRTIO0_HART, VIRTIO0_IRQ,
+    VIRTIO1_HART, VIRTIO1_IRQ,
 };
 
 // Register offsets
@@ -146,7 +147,7 @@ pub fn init() {
 
     // Root delegates wired sources to the supervisor (child) domain.
     // Without this, the child domain won't see the device IRQs.
-    for irq in [UART0_IRQ, VIRTIO0_IRQ] {
+    for irq in [UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ] {
         root.sourcecfg_delegate(irq, 0);
     }
 
@@ -154,8 +155,14 @@ pub fn init() {
     // Configure sources to deliver MSIs with EIID == irq.
     // Route all device MSIs to hart0 so early boot doesn't depend on other harts
     // having IMSIC/trap fully initialized yet.
-    for irq in [UART0_IRQ, VIRTIO0_IRQ] {
-        sup.set_target_msi(irq, UART0_HART as u32, VIRTIO0_HART as u32, irq);
+    for irq in [UART0_IRQ, VIRTIO0_IRQ, VIRTIO1_IRQ] {
+        let guest = match irq {
+            UART0_IRQ => UART0_HART as u32,
+            VIRTIO0_IRQ => VIRTIO0_HART as u32,
+            VIRTIO1_IRQ => VIRTIO1_HART as u32,
+            _ => 0,
+        };
+        sup.set_target_msi(irq, UART0_HART as u32, guest, irq);
         sup.set_sourcecfg(irq, SourceMode::LevelHigh);
         sup.set_ie(irq, true);
     }
