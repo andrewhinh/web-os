@@ -126,6 +126,7 @@ pub struct Command<'a> {
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
+    pgid: Option<usize>,
 }
 
 pub enum ChildStdio {
@@ -190,6 +191,7 @@ impl<'a> Command<'a> {
             stdin: None,
             stdout: None,
             stderr: None,
+            pgid: None,
         }
     }
 
@@ -241,6 +243,11 @@ impl<'a> Command<'a> {
 
     pub fn stderr(&mut self, stderr: Stdio) -> &mut Self {
         self.stderr = Some(stderr);
+        self
+    }
+
+    pub fn pgrp(&mut self, pgid: usize) -> &mut Self {
+        self.pgid = Some(pgid);
         self
     }
 
@@ -317,6 +324,13 @@ impl<'a> Command<'a> {
         let pid = self.do_fork()?;
         if pid == 0 {
             drop(input);
+            if let Some(pgid) = self.pgid {
+                let _ = sys::setpgid(0, pgid);
+            }
+            let _ = signal::signal(signal::SIGINT, signal::SIG_DFL);
+            let _ = signal::signal(signal::SIGTSTP, signal::SIG_DFL);
+            let _ = signal::signal(signal::SIGTTIN, signal::SIG_DFL);
+            let _ = signal::signal(signal::SIGTTOU, signal::SIG_DFL);
             let err = match self.do_exec(theirs, envp) {
                 Err(err) => err,
             };
@@ -491,6 +505,10 @@ impl Process {
         Self { pid, status: None }
     }
 
+    pub fn pid(&self) -> usize {
+        self.pid
+    }
+
     pub fn kill(&mut self) -> sys::Result<()> {
         if self.status.is_some() {
             Err(sys::Error::InvalidArgument)
@@ -537,6 +555,10 @@ impl Child {
             stdout: io.stdout.map(ChildStdout),
             stderr: io.stderr.map(ChildStderr),
         }
+    }
+
+    pub fn pid(&self) -> usize {
+        self.handle.pid()
     }
 
     pub fn wait(&mut self) -> sys::Result<ExitStatus> {

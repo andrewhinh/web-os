@@ -24,7 +24,7 @@ use crate::pipe::Pipe;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::poll;
 #[cfg(all(target_os = "none", feature = "kernel"))]
-use crate::proc::{Cpus, either_copyin, either_copyout};
+use crate::proc::{Cpus, either_copyin, either_copyout, kill_pgrp};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::sleeplock::{SleepLock, SleepLockGuard};
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -263,8 +263,14 @@ impl File {
         }
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Pipe(p) if self.nonblock => p.read_nonblock(dst, n),
-            VFile::Device(d) if self.nonblock && d.major() == Major::Console => {
-                if !console::readable() {
+            VFile::Device(d) if d.major() == Major::Console => {
+                let p = Cpus::myproc().unwrap();
+                let pgid = p.inner.lock().pgid;
+                if !console::is_foreground(pgid) {
+                    let _ = kill_pgrp(pgid, crate::signal::SIGTTIN);
+                    return Err(Interrupted);
+                }
+                if self.nonblock && !console::readable() {
                     return Err(WouldBlock);
                 }
                 d.read(dst, n)
@@ -281,6 +287,7 @@ impl File {
         }
         match self.f.as_ref().unwrap().as_ref() {
             VFile::Pipe(p) if self.nonblock => p.write_nonblock(src, n),
+            VFile::Device(d) if d.major() == Major::Console => d.write(src, n),
             VFile::Socket(s) => s.write(src, n, self.nonblock),
             _ => self.f.as_ref().unwrap().write(src, n, self.append),
         }
@@ -489,6 +496,13 @@ impl File {
 
     pub fn is_writable(&self) -> bool {
         self.writable
+    }
+
+    pub fn is_console(&self) -> bool {
+        matches!(
+            self.f.as_ref().map(|f| f.as_ref()),
+            Some(VFile::Device(d)) if d.major() == Major::Console
+        )
     }
 
     pub fn inode(&self) -> Option<Inode> {

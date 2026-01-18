@@ -33,7 +33,7 @@ act push --bind                                  # test CI
 - [x] IPC: shared memory + semaphores
 - [x] [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
 - [x] proc control: signals + waitpid opts + interval timers
-- [ ] tty/job control: pgrp + sessions + controlling TTY + fg/bg
+- [x] tty/job control: pgrp + sessions + controlling TTY + fg/bg
 - [x] adv I/O: nonblock + poll/select
 - [x] fcntl: F_GETFL/F_SETFL + FD_CLOEXEC
 - [x] file locks: fcntl F_SETLK/F_GETLK

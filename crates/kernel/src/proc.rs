@@ -22,7 +22,8 @@ use crate::riscv::registers::scause::Exception;
 use crate::riscv::{pteflags::*, *};
 use crate::runq::{runq_is_empty, runq_pop, runq_push_cpu};
 use crate::signal::{
-    NSIG, SIG_DFL, SIG_IGN, SIGALRM, SIGKILL, SigDefaultAction, WNOHANG, default_action, sig_mask,
+    NSIG, SIG_DFL, SIG_IGN, SIGALRM, SIGCONT, SIGKILL, SigDefaultAction, WCONTINUED, WNOHANG,
+    WUNTRACED, default_action, sig_mask,
 };
 use crate::spinlock::{Mutex, MutexGuard};
 use crate::swtch::swtch;
@@ -344,11 +345,16 @@ pub struct ProcInner {
     pub killed: bool,     // if true, have been killed
     pub xstate: i32,      // Exit status to be returned to parent's wait
     pub pid: PId,         // Process ID
+    pub pgid: usize,      // Process group ID
+    pub sid: usize,       // Session ID
     pub last_cpu: usize,  // Last CPU this process was run on
     pub sig_pending: u32,
     pub sig_handlers: [usize; NSIG],
     pub sig_alarm_deadline: usize,
     pub sig_alarm_interval: usize,
+    pub stop_sig: usize,
+    pub stop_reported: bool,
+    pub cont_pending: bool,
 }
 
 // These are private to the process, so lock need not be held.
@@ -434,6 +440,7 @@ pub enum ProcState {
     UNUSED,
     USED,
     SLEEPING,
+    STOPPED,
     RUNNABLE,
     RUNNING,
     ZOMBIE,
@@ -543,6 +550,11 @@ impl Procs {
                 ProcState::UNUSED => {
                     lock.pid = PId::alloc();
                     lock.state = ProcState::USED;
+                    lock.pgid = lock.pid.0;
+                    lock.sid = lock.pid.0;
+                    lock.stop_sig = 0;
+                    lock.stop_reported = false;
+                    lock.cont_pending = false;
 
                     let data = p.data_mut();
                     // Allocate a trapframe page.
@@ -649,6 +661,8 @@ impl Proc {
         data.sig_active = false;
         data.sig_restorer = 0;
         guard.pid = PId(0);
+        guard.pgid = 0;
+        guard.sid = 0;
         data.name.clear();
         data.is_thread = false;
         data.ustack = 0;
@@ -659,6 +673,9 @@ impl Proc {
         guard.sig_handlers = [SIG_DFL; NSIG];
         guard.sig_alarm_deadline = 0;
         guard.sig_alarm_interval = 0;
+        guard.stop_sig = 0;
+        guard.stop_reported = false;
+        guard.cont_pending = false;
         guard.state = ProcState::UNUSED;
         drop(guard);
         for wb in writebacks {
@@ -830,11 +847,16 @@ impl ProcInner {
             killed: false,
             xstate: 0,
             pid: PId(0),
+            pgid: 0,
+            sid: 0,
             last_cpu: 0,
             sig_pending: 0,
             sig_handlers: [SIG_DFL; NSIG],
             sig_alarm_deadline: 0,
             sig_alarm_interval: 0,
+            stop_sig: 0,
+            stop_reported: false,
+            cont_pending: false,
         }
     }
 }
@@ -1166,7 +1188,10 @@ pub fn on_tick(now: usize) {
         if guard.sig_alarm_deadline == 0 {
             continue;
         }
-        if guard.state == ProcState::UNUSED || guard.state == ProcState::ZOMBIE {
+        if guard.state == ProcState::UNUSED
+            || guard.state == ProcState::ZOMBIE
+            || guard.state == ProcState::STOPPED
+        {
             continue;
         }
         if now < guard.sig_alarm_deadline {
@@ -1203,6 +1228,9 @@ pub fn deliver_signals(p: &Arc<Proc>) {
         guard.killed = true;
         return;
     }
+    if sig == SIGCONT {
+        guard.cont_pending = false;
+    }
     let handler = guard.sig_handlers[sig - 1];
     if handler == SIG_IGN {
         guard.sig_pending &= !mask;
@@ -1210,8 +1238,28 @@ pub fn deliver_signals(p: &Arc<Proc>) {
     }
     if handler == SIG_DFL {
         guard.sig_pending &= !mask;
-        if default_action(sig) == SigDefaultAction::Terminate {
-            guard.killed = true;
+        match default_action(sig) {
+            SigDefaultAction::Terminate => {
+                guard.killed = true;
+            }
+            SigDefaultAction::Stop => {
+                guard.stop_sig = sig;
+                guard.stop_reported = false;
+                guard.state = ProcState::STOPPED;
+                let parent = {
+                    let parents = PROCS.parents.lock();
+                    parents[p.idx].clone()
+                };
+                if let Some(parent) = parent {
+                    wakeup(Arc::as_ptr(&parent) as usize);
+                }
+                let _guard = sched(guard, &mut data.context);
+                return;
+            }
+            SigDefaultAction::Continue => {
+                guard.cont_pending = false;
+            }
+            SigDefaultAction::Ignore => {}
         }
         return;
     }
@@ -1276,6 +1324,11 @@ pub fn fork() -> Result<usize> {
         c_guard.sig_pending = 0;
         c_guard.sig_alarm_deadline = p_inner.sig_alarm_deadline;
         c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
+        c_guard.pgid = p_inner.pgid;
+        c_guard.sid = p_inner.sid;
+        c_guard.stop_sig = 0;
+        c_guard.stop_reported = false;
+        c_guard.cont_pending = false;
     }
 
     // copy mmap metadata + any already-mapped pages
@@ -1380,6 +1433,11 @@ pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize
         c_guard.sig_pending = 0;
         c_guard.sig_alarm_deadline = p_inner.sig_alarm_deadline;
         c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
+        c_guard.pgid = p_inner.pgid;
+        c_guard.sid = p_inner.sid;
+        c_guard.stop_sig = 0;
+        c_guard.stop_reported = false;
+        c_guard.cont_pending = false;
     }
 
     let pid = c_guard.pid;
@@ -1461,7 +1519,20 @@ pub fn kill(pid: usize, sig: usize) -> Result<()> {
             if sig != SIGKILL && guard.sig_handlers[sig - 1] == SIG_IGN {
                 return Ok(());
             }
+            if sig == SIGCONT {
+                guard.stop_sig = 0;
+                guard.stop_reported = false;
+                guard.cont_pending = true;
+            }
             guard.sig_pending |= mask;
+            if guard.state == ProcState::STOPPED
+                && (sig == SIGCONT
+                    || sig == SIGKILL
+                    || (guard.sig_handlers[sig - 1] == SIG_DFL
+                        && default_action(sig) == SigDefaultAction::Terminate))
+            {
+                make_runnable(idx, &mut guard);
+            }
             if guard.state == ProcState::SLEEPING {
                 // Wake process from sleep().
                 make_runnable(idx, &mut guard);
@@ -1470,6 +1541,118 @@ pub fn kill(pid: usize, sig: usize) -> Result<()> {
         }
     }
     Err(NoSuchProcess)
+}
+
+pub fn kill_pgrp(pgid: usize, sig: usize) -> Result<()> {
+    if pgid == 0 {
+        return Err(InvalidArgument);
+    }
+    if sig == 0 || sig > NSIG {
+        return Err(InvalidArgument);
+    }
+    let mask = sig_mask(sig);
+    if mask == 0 {
+        return Err(InvalidArgument);
+    }
+    let mut found = false;
+    for (idx, p) in PROCS.pool.iter().enumerate() {
+        let mut guard = p.inner.lock();
+        if guard.state == ProcState::UNUSED || guard.pgid != pgid {
+            continue;
+        }
+        found = true;
+        if sig == SIGKILL
+            || (guard.sig_handlers[sig - 1] == SIG_DFL
+                && default_action(sig) == SigDefaultAction::Terminate)
+        {
+            guard.killed = true;
+        }
+        if sig != SIGKILL && guard.sig_handlers[sig - 1] == SIG_IGN {
+            continue;
+        }
+        if sig == SIGCONT {
+            guard.stop_sig = 0;
+            guard.stop_reported = false;
+            guard.cont_pending = true;
+        }
+        guard.sig_pending |= mask;
+        if guard.state == ProcState::STOPPED
+            && (sig == SIGCONT
+                || sig == SIGKILL
+                || (guard.sig_handlers[sig - 1] == SIG_DFL
+                    && default_action(sig) == SigDefaultAction::Terminate))
+        {
+            make_runnable(idx, &mut guard);
+        }
+        if guard.state == ProcState::SLEEPING {
+            make_runnable(idx, &mut guard);
+        }
+    }
+    if found { Ok(()) } else { Err(NoSuchProcess) }
+}
+
+pub fn getpgrp() -> Result<usize> {
+    let p = Cpus::myproc().unwrap();
+    Ok(p.inner.lock().pgid)
+}
+
+pub fn setpgid(pid: usize, pgid: usize) -> Result<()> {
+    let p = Cpus::myproc().unwrap();
+    let (my_pid, my_sid) = {
+        let guard = p.inner.lock();
+        (guard.pid.0, guard.sid)
+    };
+    let target_pid = if pid == 0 { my_pid } else { pid };
+    let new_pgid = if pgid == 0 { target_pid } else { pgid };
+    if new_pgid == 0 {
+        return Err(InvalidArgument);
+    }
+    let parents = PROCS.parents.lock();
+    for (idx, proc) in PROCS.pool.iter().enumerate() {
+        let mut guard = proc.inner.lock();
+        if guard.pid.0 != target_pid {
+            continue;
+        }
+        if guard.sid != my_sid {
+            return Err(PermissionDenied);
+        }
+        if guard.pid.0 == guard.sid {
+            return Err(PermissionDenied);
+        }
+        if !Arc::ptr_eq(proc, &p) && !parents[idx].as_ref().is_some_and(|pp| Arc::ptr_eq(pp, &p)) {
+            return Err(PermissionDenied);
+        }
+        guard.pgid = new_pgid;
+        return Ok(());
+    }
+    Err(NoSuchProcess)
+}
+
+pub fn setsid() -> Result<usize> {
+    let p = Cpus::myproc().unwrap();
+    let mut guard = p.inner.lock();
+    if guard.pid.0 == guard.pgid {
+        return Err(PermissionDenied);
+    }
+    guard.sid = guard.pid.0;
+    guard.pgid = guard.pid.0;
+    guard.stop_sig = 0;
+    guard.stop_reported = false;
+    guard.cont_pending = false;
+    Ok(guard.sid)
+}
+
+pub fn pgid_in_session(pgid: usize, sid: usize) -> bool {
+    if pgid == 0 || sid == 0 {
+        return false;
+    }
+    for p in PROCS.pool.iter() {
+        let guard = p.inner.lock();
+        if guard.state != ProcState::UNUSED && guard.pgid == pgid && guard.sid == sid {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn sigaction(sig: usize, handler: usize, restorer: usize) -> Result<usize> {
@@ -1538,6 +1721,10 @@ pub fn wait(addr: UVAddr) -> Result<usize> {
     waitpid(-1, addr, 0)
 }
 
+fn stop_status(sig: usize) -> i32 {
+    (((sig & 0xff) << 8) | 0x7f) as i32
+}
+
 pub fn waitpid(pid: isize, addr: UVAddr, options: usize) -> Result<usize> {
     let mut havekids;
     let p = Cpus::myproc().unwrap();
@@ -1559,13 +1746,34 @@ pub fn waitpid(pid: isize, addr: UVAddr, options: usize) -> Result<usize> {
                         continue;
                     }
                     // make sure the child isn't still in exit() or swtch().
-                    let c_guard = c.inner.lock();
+                    let mut c_guard = c.inner.lock();
                     if let Some(want) = want_pid
                         && c_guard.pid.0 != want
                     {
                         continue;
                     }
                     havekids = true;
+                    if c_guard.state == ProcState::STOPPED
+                        && (options & WUNTRACED) != 0
+                        && !c_guard.stop_reported
+                    {
+                        let pid = c_guard.pid.0;
+                        let status = stop_status(c_guard.stop_sig);
+                        let aspace = p.data().aspace.as_ref().unwrap();
+                        let mut as_inner = aspace.inner.lock();
+                        as_inner.uvm.as_mut().unwrap().copyout(addr, &status)?;
+                        c_guard.stop_reported = true;
+                        return Ok(pid);
+                    }
+                    if (options & WCONTINUED) != 0 && c_guard.cont_pending {
+                        let pid = c_guard.pid.0;
+                        let status = 0xffff_i32;
+                        let aspace = p.data().aspace.as_ref().unwrap();
+                        let mut as_inner = aspace.inner.lock();
+                        as_inner.uvm.as_mut().unwrap().copyout(addr, &status)?;
+                        c_guard.cont_pending = false;
+                        return Ok(pid);
+                    }
                     if c_guard.state == ProcState::ZOMBIE {
                         // Found one.
                         let pid = c_guard.pid.0;
@@ -1591,8 +1799,27 @@ pub fn waitpid(pid: isize, addr: UVAddr, options: usize) -> Result<usize> {
         if !havekids || p.inner.lock().killed {
             break Err(NoChildProcesses);
         }
-        if p.inner.lock().sig_pending != 0 {
-            return Err(Interrupted);
+        {
+            let mut guard = p.inner.lock();
+            let mut pending = guard.sig_pending;
+            if pending != 0 {
+                for sig in 1..=NSIG {
+                    let mask = sig_mask(sig);
+                    if pending & mask == 0 {
+                        continue;
+                    }
+                    let handler = guard.sig_handlers[sig - 1];
+                    if handler == SIG_IGN
+                        || (handler == SIG_DFL && default_action(sig) == SigDefaultAction::Ignore)
+                    {
+                        pending &= !mask;
+                        guard.sig_pending &= !mask;
+                    }
+                }
+            }
+            if pending != 0 {
+                return Err(Interrupted);
+            }
         }
 
         // wait for a child to exit

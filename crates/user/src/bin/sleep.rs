@@ -9,5 +9,9 @@ fn main() {
     }
 
     let n = args.next().unwrap();
-    sys::sleep(n.parse().unwrap()).unwrap();
+    match sys::sleep(n.parse().unwrap()) {
+        Ok(_) => {}
+        Err(sys::Error::Interrupted) => {}
+        Err(err) => panic!("{err}"),
+    }
 }

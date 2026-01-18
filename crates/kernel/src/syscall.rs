@@ -13,7 +13,7 @@ use crate::error::Error::*;
 use crate::error::Result;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::{
-    array,
+    array, console,
     defs::AsBytes,
     exec::exec,
     fcntl::{self, FcntlCmd, OMode},
@@ -88,6 +88,11 @@ pub enum SysCalls {
     Listen = 51,
     Accept = 52,
     Connect = 53,
+    Setpgid = 54,
+    Getpgrp = 55,
+    Setsid = 56,
+    Tcgetpgrp = 57,
+    Tcsetpgrp = 58,
     Invalid = 0,
 }
 
@@ -203,6 +208,11 @@ impl SysCalls {
         (Fn::U(Self::listen), "(fd: usize, backlog: usize)"),
         (Fn::I(Self::accept), "(fd: usize)"),
         (Fn::U(Self::connect), "(fd: usize, path: &str)"),
+        (Fn::U(Self::setpgid), "(pid: usize, pgid: usize)"),
+        (Fn::I(Self::getpgrp), "()"),
+        (Fn::I(Self::setsid), "()"),
+        (Fn::I(Self::tcgetpgrp), "(fd: usize)"),
+        (Fn::U(Self::tcsetpgrp), "(fd: usize, pgid: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -576,6 +586,11 @@ impl SysCalls {
             let ticks0 = *ticks;
             while *ticks - ticks0 < n {
                 if p.inner.lock().killed {
+                    return Err(Interrupted);
+                }
+                let pending =
+                    p.inner.lock().sig_pending & !crate::signal::sig_mask(crate::signal::SIGCONT);
+                if pending != 0 {
                     return Err(Interrupted);
                 }
                 ticks = sleep(&(*ticks) as *const _ as usize, ticks);
@@ -982,6 +997,85 @@ impl SysCalls {
         }
     }
 
+    pub fn setpgid() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let pid = argraw(0);
+            let pgid = argraw(1);
+            setpgid(pid, pgid)
+        }
+    }
+
+    pub fn getpgrp() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        getpgrp()
+    }
+
+    pub fn setsid() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        setsid()
+    }
+
+    pub fn tcgetpgrp() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let fd = argraw(0);
+            let p = Cpus::myproc().unwrap();
+            let data = p.data();
+            let file = data
+                .ofile
+                .get(fd)
+                .ok_or(FileDescriptorTooLarge)?
+                .as_ref()
+                .ok_or(BadFileDescriptor)?;
+            if !file.is_console() {
+                return Err(InvalidArgument);
+            }
+            let sid = p.inner.lock().sid;
+            if console::session() != 0 && console::session() != sid {
+                return Err(PermissionDenied);
+            }
+            Ok(console::fg_pgrp())
+        }
+    }
+
+    pub fn tcsetpgrp() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let fd = argraw(0);
+            let pgid = argraw(1);
+            if pgid == 0 {
+                return Err(InvalidArgument);
+            }
+            let p = Cpus::myproc().unwrap();
+            let data = p.data();
+            let file = data
+                .ofile
+                .get(fd)
+                .ok_or(FileDescriptorTooLarge)?
+                .as_ref()
+                .ok_or(BadFileDescriptor)?;
+            if !file.is_console() {
+                return Err(InvalidArgument);
+            }
+            let sid = p.inner.lock().sid;
+            if !pgid_in_session(pgid, sid) {
+                return Err(PermissionDenied);
+            }
+            console::set_fg_pgrp(sid, pgid)
+        }
+    }
+
     pub fn unlink() -> Result<()> {
         #[cfg(not(all(target_os = "none", feature = "kernel")))]
         return Ok(());
@@ -1302,6 +1396,11 @@ impl SysCalls {
             51 => Self::Listen,
             52 => Self::Accept,
             53 => Self::Connect,
+            54 => Self::Setpgid,
+            55 => Self::Getpgrp,
+            56 => Self::Setsid,
+            57 => Self::Tcgetpgrp,
+            58 => Self::Tcsetpgrp,
             _ => Self::Invalid,
         }
     }

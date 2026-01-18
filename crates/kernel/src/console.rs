@@ -11,7 +11,8 @@ use core::num::Wrapping;
 
 use crate::error::{Error::*, Result};
 use crate::file::{DEVSW, Device, Major};
-use crate::proc::{Cpus, dump, either_copyin, either_copyout, sleep, wakeup};
+use crate::proc::{Cpus, dump, either_copyin, either_copyout, kill_pgrp, sleep, wakeup};
+use crate::signal::{SIGINT, SIGTSTP};
 use crate::spinlock::Mutex;
 use crate::uart;
 use crate::vm::VirtAddr;
@@ -31,6 +32,8 @@ pub struct Cons {
     r: Wrapping<usize>, // Read index
     w: Wrapping<usize>, // Write index
     e: Wrapping<usize>, // Edit index
+    session: usize,
+    fg_pgrp: usize,
 }
 
 impl Cons {
@@ -40,6 +43,8 @@ impl Cons {
             r: Wrapping(0),
             w: Wrapping(0),
             e: Wrapping(0),
+            session: 0,
+            fg_pgrp: 0,
         }
     }
 }
@@ -116,6 +121,26 @@ impl Mutex<Cons> {
     pub fn intr(&self, c: u8) {
         let mut cons_guard = self.lock();
         match c {
+            m if m == ctrl(b'C') => {
+                let target = if cons_guard.fg_pgrp == 0 {
+                    Cpus::myproc().map(|p| p.inner.lock().pgid).unwrap_or(0)
+                } else {
+                    cons_guard.fg_pgrp
+                };
+                if target != 0 {
+                    let _ = kill_pgrp(target, SIGINT);
+                }
+            }
+            m if m == ctrl(b'Z') => {
+                let target = if cons_guard.fg_pgrp == 0 {
+                    Cpus::myproc().map(|p| p.inner.lock().pgid).unwrap_or(0)
+                } else {
+                    cons_guard.fg_pgrp
+                };
+                if target != 0 {
+                    let _ = kill_pgrp(target, SIGTSTP);
+                }
+            }
             // Print process list
             m if m == ctrl(b'P') => dump(),
             // Kill line
@@ -169,6 +194,44 @@ pub fn init() {
 pub fn readable() -> bool {
     let guard = CONS.lock();
     guard.r != guard.w
+}
+
+pub fn session() -> usize {
+    let guard = CONS.lock();
+    guard.session
+}
+
+pub fn fg_pgrp() -> usize {
+    let guard = CONS.lock();
+    guard.fg_pgrp
+}
+
+pub fn is_foreground(pgid: usize) -> bool {
+    let guard = CONS.lock();
+    guard.fg_pgrp == 0 || guard.fg_pgrp == pgid
+}
+
+pub fn set_session(sid: usize) -> Result<()> {
+    let mut guard = CONS.lock();
+    if guard.session != 0 && guard.session != sid {
+        return Err(PermissionDenied);
+    }
+    if guard.session == 0 {
+        guard.session = sid;
+    }
+    Ok(())
+}
+
+pub fn set_fg_pgrp(sid: usize, pgid: usize) -> Result<()> {
+    let mut guard = CONS.lock();
+    if guard.session != 0 && guard.session != sid {
+        return Err(PermissionDenied);
+    }
+    if guard.session == 0 {
+        guard.session = sid;
+    }
+    guard.fg_pgrp = pgid;
+    Ok(())
 }
 
 // send one character to the uart.
