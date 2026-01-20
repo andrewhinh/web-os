@@ -53,7 +53,7 @@ act push --bind                                  # test CI
 ### User-Space
 
 - [x] [pzip/punzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-pzip)
-- [ ] [psort](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-sort)
+- [x] [psort](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-sort)
 - [ ] [reverse](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-reverse)
 - [ ] [kv store](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-kv)
 - [ ] [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
