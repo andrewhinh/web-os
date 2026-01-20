@@ -2,13 +2,14 @@
 
 use ulib::{eprintln, println, process::Command, sys};
 
-const TESTS: [&str; 16] = [
+const TESTS: [&str; 17] = [
     "test_aplic",
     "test_cow",
     "test_disk",
     "test_fcntl",
     "test_fsync",
     "test_ipc",
+    "test_kv",
     "test_ktask",
     "test_mmap",
     "test_net",

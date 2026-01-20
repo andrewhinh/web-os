@@ -55,6 +55,11 @@ path = "src/bin/kill.rs"
 test = false
 
 [[bin]]
+name = "_kv"
+path = "src/bin/kv.rs"
+test = false
+
+[[bin]]
 name = "_ln"
 path = "src/bin/ln.rs"
 test = false
@@ -137,6 +142,11 @@ test = false
 [[bin]]
 name = "_test_ipc"
 path = "src/bin/test_ipc.rs"
+test = false
+
+[[bin]]
+name = "_test_kv"
+path = "src/bin/test_kv.rs"
 test = false
 
 [[bin]]
