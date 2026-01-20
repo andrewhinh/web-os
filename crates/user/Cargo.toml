@@ -80,6 +80,16 @@ path = "src/bin/head.rs"
 test = false
 
 [[bin]]
+name = "_punzip"
+path = "src/bin/punzip.rs"
+test = false
+
+[[bin]]
+name = "_pzip"
+path = "src/bin/pzip.rs"
+test = false
+
+[[bin]]
 name = "_clear"
 path = "src/bin/clear.rs"
 test = false
@@ -97,6 +107,11 @@ test = false
 [[bin]]
 name = "_test_pdual"
 path = "src/bin/test_pdual.rs"
+test = false
+
+[[bin]]
+name = "_test_pzip"
+path = "src/bin/test_pzip.rs"
 test = false
 
 [[bin]]

@@ -127,6 +127,7 @@ pub struct Command<'a> {
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
     pgid: Option<usize>,
+    foreground: bool,
 }
 
 pub enum ChildStdio {
@@ -192,6 +193,7 @@ impl<'a> Command<'a> {
             stdout: None,
             stderr: None,
             pgid: None,
+            foreground: false,
         }
     }
 
@@ -248,6 +250,11 @@ impl<'a> Command<'a> {
 
     pub fn pgrp(&mut self, pgid: usize) -> &mut Self {
         self.pgid = Some(pgid);
+        self
+    }
+
+    pub fn foreground(&mut self, foreground: bool) -> &mut Self {
+        self.foreground = foreground;
         self
     }
 
@@ -320,12 +327,31 @@ impl<'a> Command<'a> {
             .as_deref()
             .or(unsafe { (*(&raw const ENVIRON)).as_deref() });
         let (ours, theirs) = self.setup_io(default, needs_stdin)?;
+        let needs_tty_sync = self.foreground && matches!(theirs.stdin, ChildStdio::Inherit);
+        let (mut sync_r, mut sync_w) = if needs_tty_sync {
+            let (r, w) = pipe::pipe()?;
+            (Some(r), Some(w))
+        } else {
+            (None, None)
+        };
         let (mut input, mut output) = pipe::pipe()?;
         let pid = self.do_fork()?;
         if pid == 0 {
+            if let Some(mut r) = sync_r.take() {
+                drop(sync_w.take());
+                let mut byte = [0u8; 1];
+                let _ = r.read(&mut byte);
+            }
             drop(input);
             if let Some(pgid) = self.pgid {
-                let _ = sys::setpgid(0, pgid);
+                let target = if pgid == 0 {
+                    sys::getpid().unwrap_or(0)
+                } else {
+                    pgid
+                };
+                if target != 0 {
+                    let _ = sys::setpgid(0, target);
+                }
             }
             let _ = signal::signal(signal::SIGINT, signal::SIG_DFL);
             let _ = signal::signal(signal::SIGTSTP, signal::SIG_DFL);
@@ -340,6 +366,16 @@ impl<'a> Command<'a> {
         }
 
         drop(output);
+        drop(sync_r.take());
+        if let Some(mut w) = sync_w.take() {
+            if needs_tty_sync {
+                let requested = self.pgid.unwrap_or(0);
+                let job_pgid = if requested == 0 { pid } else { requested };
+                let _ = sys::setpgid(pid, job_pgid);
+                let _ = sys::tcsetpgrp(0, job_pgid);
+            }
+            let _ = w.write(&[0u8]);
+        }
         let mut p = Process::new(pid);
         let mut bytes = [0; 8];
         loop {
@@ -349,6 +385,13 @@ impl<'a> Command<'a> {
                 }
                 Ok(8) => {
                     let err = sys::Error::from_isize(isize::from_be_bytes(bytes));
+                    if needs_tty_sync {
+                        if let Ok(pgid) = sys::getpgrp() {
+                            if pgid != 0 {
+                                let _ = sys::tcsetpgrp(0, pgid);
+                            }
+                        }
+                    }
                     return Err(err);
                 }
                 Err(e) if e == sys::Error::Interrupted => {}

@@ -94,6 +94,8 @@ pub enum SysCalls {
     Tcgetpgrp = 57,
     Tcsetpgrp = 58,
     LogCrash = 59,
+    Getnprocs = 60,
+    Getnprocsconf = 61,
     Invalid = 0,
 }
 
@@ -215,6 +217,8 @@ impl SysCalls {
         (Fn::I(Self::tcgetpgrp), "(fd: usize)"),
         (Fn::U(Self::tcsetpgrp), "(fd: usize, pgid: usize)"),
         (Fn::U(Self::logcrash), "(stage: usize)"),
+        (Fn::I(Self::getnprocs), "()"),
+        (Fn::I(Self::getnprocsconf), "()"),
     ];
 
     pub fn invalid() -> ! {
@@ -775,6 +779,24 @@ impl SysCalls {
         #[cfg(all(target_os = "none", feature = "kernel"))]
         {
             Ok(task::poll_count_total())
+        }
+    }
+
+    pub fn getnprocs() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            Ok(crate::param::NCPU)
+        }
+    }
+
+    pub fn getnprocsconf() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            Ok(crate::param::NCPU)
         }
     }
 }
@@ -1416,6 +1438,8 @@ impl SysCalls {
             57 => Self::Tcgetpgrp,
             58 => Self::Tcsetpgrp,
             59 => Self::LogCrash,
+            60 => Self::Getnprocs,
+            61 => Self::Getnprocsconf,
             _ => Self::Invalid,
         }
     }

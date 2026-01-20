@@ -50,17 +50,21 @@ act push --bind                                  # test CI
 - [x] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) + [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
 - [x] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
 
+### User-Space
+
+- [x] [pzip/punzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-pzip)
+- [ ] [psort](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-sort)
+- [ ] [reverse](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-reverse)
+- [ ] [kv store](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-kv)
+- [ ] [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
+- [ ] [distributed fs](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-distributed-ufs)
+- [ ] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
+- [ ] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
+- [ ] [memcached](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-memcached)
+
 ### App
 
 - [ ] stream kernel video to browser via VNC and WebRTC
-
-### User-Space
-
-- [ ] [zip/unzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-utilities#wzip-and-wunzip) and [pzip](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-pzip)
-- [ ] [reverse](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-reverse)
-- [ ] [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
-- [ ] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
-- [ ] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
 
 ## Credit
 

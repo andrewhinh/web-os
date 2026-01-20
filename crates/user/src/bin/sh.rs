@@ -139,8 +139,19 @@ fn main() {
         print!("$ ");
 
         let mut input = String::new();
-        stdin().read_line(&mut input).unwrap();
+        loop {
+            match stdin().read_line(&mut input) {
+                Ok(0) => return,
+                Ok(_) => break,
+                Err(sys::Error::Interrupted) => continue,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    continue 'main;
+                }
+            }
+        }
 
+        let input = normalize_input(&input);
         let mut line = input.trim();
         if line.is_empty() {
             continue;
@@ -304,9 +315,11 @@ fn main() {
                         );
                     }
 
+                    let is_first = pgid.is_none();
                     let target_pgid = pgid.unwrap_or(0);
                     match Command::new(command)
                         .pgrp(target_pgid)
+                        .foreground(is_first && !background)
                         .args(arg_vec)
                         .stdin(stdin)
                         .stdout(stdout)
@@ -317,6 +330,9 @@ fn main() {
                             let job_pgid = pgid.unwrap_or(pid);
                             let _ = sys::setpgid(pid, job_pgid);
                             pgid = Some(job_pgid);
+                            if is_first && !background {
+                                let _ = sys::tcsetpgrp(0, job_pgid);
+                            }
                             if commands.peek().is_some() {
                                 prev_stdout = child.stdout.take().map(Stdio::from);
                             }
@@ -392,4 +408,18 @@ fn set_path_from_etc_paths() -> sys::Result<()> {
         let _ = env::set_var("PATH", &new_path);
     }
     Ok(())
+}
+
+fn normalize_input(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        match ch {
+            '\x08' | '\x7f' => {
+                out.pop();
+            }
+            _ if ch.is_ascii_control() => {}
+            _ => out.push(ch),
+        }
+    }
+    out
 }
