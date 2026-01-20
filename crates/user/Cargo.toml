@@ -20,6 +20,11 @@ path = "src/bin/cat.rs"
 test = false
 
 [[bin]]
+name = "_clear"
+path = "src/bin/clear.rs"
+test = false
+
+[[bin]]
 name = "_echo"
 path = "src/bin/echo.rs"
 test = false
@@ -27,6 +32,11 @@ test = false
 [[bin]]
 name = "_grep"
 path = "src/bin/grep.rs"
+test = false
+
+[[bin]]
+name = "_head"
+path = "src/bin/head.rs"
 test = false
 
 [[bin]]
@@ -60,23 +70,8 @@ path = "src/bin/mkdir.rs"
 test = false
 
 [[bin]]
-name = "_rm"
-path = "src/bin/rm.rs"
-test = false
-
-[[bin]]
-name = "_sh"
-path = "src/bin/sh.rs"
-test = false
-
-[[bin]]
-name = "_wc"
-path = "src/bin/wc.rs"
-test = false
-
-[[bin]]
-name = "_head"
-path = "src/bin/head.rs"
+name = "_psort"
+path = "src/bin/psort.rs"
 test = false
 
 [[bin]]
@@ -90,13 +85,18 @@ path = "src/bin/pzip.rs"
 test = false
 
 [[bin]]
-name = "_psort"
-path = "src/bin/psort.rs"
+name = "_reverse"
+path = "src/bin/reverse.rs"
 test = false
 
 [[bin]]
-name = "_clear"
-path = "src/bin/clear.rs"
+name = "_rm"
+path = "src/bin/rm.rs"
+test = false
+
+[[bin]]
+name = "_sh"
+path = "src/bin/sh.rs"
 test = false
 
 [[bin]]
@@ -105,33 +105,8 @@ path = "src/bin/sleep.rs"
 test = false
 
 [[bin]]
-name = "_touch"
-path = "src/bin/touch.rs"
-test = false
-
-[[bin]]
-name = "_test_pdual"
-path = "src/bin/test_pdual.rs"
-test = false
-
-[[bin]]
-name = "_test_pzip"
-path = "src/bin/test_pzip.rs"
-test = false
-
-[[bin]]
-name = "_test_cow"
-path = "src/bin/test_cow.rs"
-test = false
-
-[[bin]]
-name = "_test_mmap"
-path = "src/bin/test_mmap.rs"
-test = false
-
-[[bin]]
-name = "_test_thread"
-path = "src/bin/test_thread.rs"
+name = "_test_all"
+path = "src/bin/test_all.rs"
 test = false
 
 [[bin]]
@@ -140,28 +115,8 @@ path = "src/bin/test_aplic.rs"
 test = false
 
 [[bin]]
-name = "_test_ktask"
-path = "src/bin/test_ktask.rs"
-test = false
-
-[[bin]]
-name = "_test_fcntl"
-path = "src/bin/test_fcntl.rs"
-test = false
-
-[[bin]]
-name = "_test_poll"
-path = "src/bin/test_poll.rs"
-test = false
-
-[[bin]]
-name = "_test_signal"
-path = "src/bin/test_signal.rs"
-test = false
-
-[[bin]]
-name = "_test_ipc"
-path = "src/bin/test_ipc.rs"
+name = "_test_cow"
+path = "src/bin/test_cow.rs"
 test = false
 
 [[bin]]
@@ -170,13 +125,43 @@ path = "src/bin/test_disk.rs"
 test = false
 
 [[bin]]
+name = "_test_fcntl"
+path = "src/bin/test_fcntl.rs"
+test = false
+
+[[bin]]
 name = "_test_fsync"
 path = "src/bin/test_fsync.rs"
 test = false
 
 [[bin]]
-name = "_test_all"
-path = "src/bin/test_all.rs"
+name = "_test_ipc"
+path = "src/bin/test_ipc.rs"
+test = false
+
+[[bin]]
+name = "_test_ktask"
+path = "src/bin/test_ktask.rs"
+test = false
+
+[[bin]]
+name = "_test_mmap"
+path = "src/bin/test_mmap.rs"
+test = false
+
+[[bin]]
+name = "_test_net"
+path = "src/bin/test_net.rs"
+test = false
+
+[[bin]]
+name = "_test_pdual"
+path = "src/bin/test_pdual.rs"
+test = false
+
+[[bin]]
+name = "_test_poll"
+path = "src/bin/test_poll.rs"
 test = false
 
 [[bin]]
@@ -185,8 +170,33 @@ path = "src/bin/test_psort.rs"
 test = false
 
 [[bin]]
-name = "_test_net"
-path = "src/bin/test_net.rs"
+name = "_test_pzip"
+path = "src/bin/test_pzip.rs"
+test = false
+
+[[bin]]
+name = "_test_reverse"
+path = "src/bin/test_reverse.rs"
+test = false
+
+[[bin]]
+name = "_test_signal"
+path = "src/bin/test_signal.rs"
+test = false
+
+[[bin]]
+name = "_test_thread"
+path = "src/bin/test_thread.rs"
+test = false
+
+[[bin]]
+name = "_touch"
+path = "src/bin/touch.rs"
+test = false
+
+[[bin]]
+name = "_wc"
+path = "src/bin/wc.rs"
 test = false
 
 [dependencies]
