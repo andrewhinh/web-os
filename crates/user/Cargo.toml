@@ -215,6 +215,11 @@ path = "src/bin/test_thread.rs"
 test = false
 
 [[bin]]
+name = "_test_wserver"
+path = "src/bin/test_wserver.rs"
+test = false
+
+[[bin]]
 name = "_touch"
 path = "src/bin/touch.rs"
 test = false
@@ -222,6 +227,11 @@ test = false
 [[bin]]
 name = "_wc"
 path = "src/bin/wc.rs"
+test = false
+
+[[bin]]
+name = "_wserver"
+path = "src/bin/wserver.rs"
 test = false
 
 [dependencies]

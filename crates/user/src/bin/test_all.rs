@@ -2,7 +2,7 @@
 
 use ulib::{eprintln, println, process::Command, sys};
 
-const TESTS: [&str; 19] = [
+const TESTS: [&str; 20] = [
     "test_aplic",
     "test_cow",
     "test_disk",
@@ -22,6 +22,7 @@ const TESTS: [&str; 19] = [
     "test_poll",
     "test_signal",
     "test_thread",
+    "test_wserver",
 ];
 
 fn run_test(name: &str) -> bool {
