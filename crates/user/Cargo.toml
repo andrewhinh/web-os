@@ -25,6 +25,11 @@ path = "src/bin/clear.rs"
 test = false
 
 [[bin]]
+name = "_dfs_server"
+path = "src/bin/dfs_server.rs"
+test = false
+
+[[bin]]
 name = "_echo"
 path = "src/bin/echo.rs"
 test = false
@@ -132,6 +137,11 @@ test = false
 [[bin]]
 name = "_test_cow"
 path = "src/bin/test_cow.rs"
+test = false
+
+[[bin]]
+name = "_test_dfs"
+path = "src/bin/test_dfs.rs"
 test = false
 
 [[bin]]

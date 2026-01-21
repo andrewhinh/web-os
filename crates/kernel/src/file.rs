@@ -10,6 +10,8 @@ use crate::array;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::console;
 #[cfg(all(target_os = "none", feature = "kernel"))]
+use crate::dfs;
+#[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::error::{Error::*, Result};
 #[cfg(all(target_os = "none", feature = "kernel"))]
 use crate::fcntl::{self, FcntlCmd, Flock, OMode, fd, flock, omode};
@@ -65,6 +67,7 @@ pub enum VFile {
     Pipe(Pipe),
     Socket(Arc<UnixSocket>),
     InetSocket(Arc<InetSocket>),
+    Remote(RemoteFile),
     None,
 }
 
@@ -212,6 +215,43 @@ impl FNod {
     }
 }
 
+// Remote file node
+#[cfg(all(target_os = "none", feature = "kernel"))]
+#[derive(Debug)]
+pub struct RemoteFile {
+    handle: u32,
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+impl RemoteFile {
+    pub fn new(handle: u32) -> Self {
+        Self { handle }
+    }
+
+    fn read(&self, dst: VirtAddr, n: usize) -> Result<usize> {
+        dfs::read(self.handle, dst, n)
+    }
+
+    fn write(&self, src: VirtAddr, n: usize) -> Result<usize> {
+        dfs::write(self.handle, src, n)
+    }
+
+    fn stat(&self, addr: VirtAddr) -> Result<()> {
+        dfs::stat(self.handle, addr)
+    }
+
+    fn sync(&self) -> Result<()> {
+        dfs::fsync(self.handle)
+    }
+}
+
+#[cfg(all(target_os = "none", feature = "kernel"))]
+impl Drop for RemoteFile {
+    fn drop(&mut self) {
+        let _ = dfs::close(self.handle);
+    }
+}
+
 #[cfg(all(target_os = "none", feature = "kernel"))]
 impl VFile {
     fn read(&self, dst: VirtAddr, n: usize) -> Result<usize> {
@@ -221,6 +261,7 @@ impl VFile {
             VFile::Pipe(p) => p.read(dst, n),
             VFile::Socket(s) => s.read(dst, n, false),
             VFile::InetSocket(s) => s.read(dst, n, false),
+            VFile::Remote(r) => r.read(dst, n),
             _ => panic!("file read"),
         }
     }
@@ -232,6 +273,7 @@ impl VFile {
             VFile::Pipe(p) => p.write(src, n),
             VFile::Socket(s) => s.write(src, n, false),
             VFile::InetSocket(s) => s.write(src, n, false),
+            VFile::Remote(r) => r.write(src, n),
             _ => panic!("file write"),
         }
     }
@@ -256,6 +298,7 @@ impl VFile {
                 stat.ftype = FileType::Socket;
                 either_copyout(addr, &stat)
             }
+            VFile::Remote(r) => r.stat(addr),
             _ => Err(BadFileDescriptor),
         }
     }
@@ -284,6 +327,7 @@ impl File {
             }
             VFile::Socket(s) => s.read(dst, n, self.nonblock),
             VFile::InetSocket(s) => s.read(dst, n, self.nonblock),
+            VFile::Remote(r) => r.read(dst, n),
             _ => self.f.as_ref().unwrap().read(dst, n),
         }
     }
@@ -298,6 +342,7 @@ impl File {
             VFile::Device(d) if d.major() == Major::Console => d.write(src, n),
             VFile::Socket(s) => s.write(src, n, self.nonblock),
             VFile::InetSocket(s) => s.write(src, n, self.nonblock),
+            VFile::Remote(r) => r.write(src, n),
             _ => self.f.as_ref().unwrap().write(src, n, self.append),
         }
     }
@@ -311,6 +356,7 @@ impl File {
             VFile::Pipe(_) => Err(InvalidArgument),
             VFile::Socket(_) => Err(InvalidArgument),
             VFile::InetSocket(_) => Err(InvalidArgument),
+            VFile::Remote(r) => r.sync(),
             VFile::None => Err(BadFileDescriptor),
         }
     }
@@ -347,6 +393,14 @@ impl File {
                 }
             }
             VFile::Inode(_) => {
+                if self.readable && events & poll::IN != 0 {
+                    revents |= poll::IN;
+                }
+                if self.writable && events & poll::OUT != 0 {
+                    revents |= poll::OUT;
+                }
+            }
+            VFile::Remote(_) => {
                 if self.readable && events & poll::IN != 0 {
                     revents |= poll::IN;
                 }
@@ -589,6 +643,7 @@ pub enum FType<'a> {
     Pipe(Pipe),
     Socket(Arc<UnixSocket>),
     InetSocket(Arc<InetSocket>),
+    Remote(RemoteFile),
 }
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
@@ -634,6 +689,7 @@ impl FTable {
             FType::Pipe(pi) => VFile::Pipe(pi),
             FType::Socket(sock) => VFile::Socket(sock),
             FType::InetSocket(sock) => VFile::InetSocket(sock),
+            FType::Remote(remote) => VFile::Remote(remote),
         });
 
         let mut guard = self.lock();

@@ -61,6 +61,7 @@ pub mod bio;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod buddy;
 pub mod defs;
+pub mod dfs;
 #[cfg(all(target_os = "none", feature = "kernel"))]
 pub mod elf;
 pub mod error;

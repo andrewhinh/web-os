@@ -15,9 +15,10 @@ use crate::error::Result;
 use crate::{
     array, console,
     defs::AsBytes,
+    dfs,
     exec::exec,
     fcntl::{self, FcntlCmd, OMode},
-    file::{FTABLE, FType, File},
+    file::{FTABLE, FType, File, RemoteFile},
     fs::{self, Path},
     ipc,
     log::{LOG, LogCrashStage, set_crash_stage},
@@ -940,6 +941,15 @@ impl SysCalls {
             let old_path = Path::from_arg(0, &mut old)?;
             let new_path = Path::from_arg(1, &mut new)?;
 
+            let old_remote = dfs::is_remote_path(old_path);
+            let new_remote = dfs::is_remote_path(new_path);
+            if old_remote || new_remote {
+                if old_remote != new_remote {
+                    return Err(CrossesDevices);
+                }
+                return dfs::link(old_path, new_path);
+            }
+
             let res;
             {
                 LOG.begin_op();
@@ -959,6 +969,10 @@ impl SysCalls {
             let mut linkpath = [0; MAXPATH];
             let target = Path::from_arg(0, &mut target)?;
             let linkpath = Path::from_arg(1, &mut linkpath)?;
+
+            if dfs::is_remote_path(linkpath) {
+                return dfs::symlink(target.as_str(), linkpath);
+            }
 
             let res;
             {
@@ -1120,6 +1134,10 @@ impl SysCalls {
             let mut path = [0; MAXPATH];
             let path = Path::from_arg(0, &mut path)?;
 
+            if dfs::is_remote_path(path) {
+                return dfs::unlink(path);
+            }
+
             let res;
             {
                 LOG.begin_op();
@@ -1138,6 +1156,16 @@ impl SysCalls {
             let mut path = [0u8; MAXPATH];
             let omode = argraw(1);
             let path = Path::from_arg(0, &mut path)?;
+
+            if dfs::is_remote_path(path) {
+                let handle = dfs::open(path, omode)?;
+                return FTABLE
+                    .alloc(
+                        OMode::from_usize(omode),
+                        FType::Remote(RemoteFile::new(handle)),
+                    )
+                    .and_then(fdalloc);
+            }
 
             let fd;
             {
@@ -1158,6 +1186,10 @@ impl SysCalls {
         {
             let mut path = [0u8; MAXPATH];
             let path = Path::from_arg(0, &mut path)?;
+
+            if dfs::is_remote_path(path) {
+                return dfs::mkdir(path);
+            }
 
             let res;
             {
