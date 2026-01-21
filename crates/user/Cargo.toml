@@ -115,6 +115,11 @@ path = "src/bin/sleep.rs"
 test = false
 
 [[bin]]
+name = "_fsck"
+path = "src/bin/fsck.rs"
+test = false
+
+[[bin]]
 name = "_test_all"
 path = "src/bin/test_all.rs"
 test = false
