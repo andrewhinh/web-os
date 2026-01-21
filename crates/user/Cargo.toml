@@ -75,6 +75,11 @@ path = "src/bin/mkdir.rs"
 test = false
 
 [[bin]]
+name = "_mapreduce"
+path = "src/bin/mapreduce.rs"
+test = false
+
+[[bin]]
 name = "_psort"
 path = "src/bin/psort.rs"
 test = false
@@ -152,6 +157,11 @@ test = false
 [[bin]]
 name = "_test_ktask"
 path = "src/bin/test_ktask.rs"
+test = false
+
+[[bin]]
+name = "_test_mr"
+path = "src/bin/test_mapreduce.rs"
 test = false
 
 [[bin]]

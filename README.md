@@ -58,7 +58,7 @@ act push --bind                                  # test CI
 - [x] [kv store](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-kv)
 - [ ] [concurrent web server](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-webserver)
 - [ ] [distributed fs](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-distributed-ufs)
-- [ ] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
+- [x] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
 - [ ] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
 - [ ] [memcached](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-memcached)
 

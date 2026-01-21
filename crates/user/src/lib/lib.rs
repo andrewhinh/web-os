@@ -27,6 +27,7 @@ pub mod env;
 pub mod fs;
 pub mod io;
 pub mod ipc;
+pub mod mapreduce;
 pub mod mutex;
 pub mod path;
 pub mod pipe;
