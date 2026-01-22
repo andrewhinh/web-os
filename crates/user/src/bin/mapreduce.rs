@@ -8,8 +8,11 @@ use ulib::{
     fs::File,
     io::Read,
     mapreduce::{Getter, MR_DefaultHashPartition, MR_Emit, MR_Run},
+    mutex::Mutex,
     println, sysinfo,
 };
+
+static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
 
 fn map_file(path: &str) {
     let mut file = match File::open(path) {
@@ -37,6 +40,7 @@ fn reduce_word(key: &str, get_next: Getter, partition: usize) {
     while get_next(key, partition).is_some() {
         count += 1;
     }
+    let _guard = OUTPUT_LOCK.lock();
     println!("{} {}", key, count);
 }
 

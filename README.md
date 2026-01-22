@@ -60,7 +60,7 @@ act push --bind                                  # test CI
 - [x] [distributed fs](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-distributed-ufs)
 - [x] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
 - [x] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
-- [ ] [memcached](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-memcached)
+- [x] [memcached](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-memcached)
 
 ### App
 

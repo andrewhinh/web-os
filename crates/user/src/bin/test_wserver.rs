@@ -29,6 +29,7 @@ const PARALLEL_CLIENTS: usize = 4;
 fn main() -> ExitCode {
     println!("test_wserver: start");
     let mut cmd = Command::new("wserver");
+    cmd.pgrp(0);
     let server = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -268,10 +269,10 @@ fn wait_child(pid: usize, ticks: usize) -> Option<i32> {
 }
 
 fn terminate_child(pid: usize) {
-    let _ = sys::kill(pid, signal::SIGTERM);
+    let _ = sys::killpg(pid, signal::SIGTERM);
     if wait_child(pid, CLIENT_TIMEOUT_TICKS).is_some() {
         return;
     }
-    let _ = sys::kill(pid, signal::SIGKILL);
+    let _ = sys::killpg(pid, signal::SIGKILL);
     let _ = wait_child(pid, CLIENT_TIMEOUT_TICKS);
 }

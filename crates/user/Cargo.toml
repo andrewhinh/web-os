@@ -175,6 +175,16 @@ path = "src/bin/test_ktask.rs"
 test = false
 
 [[bin]]
+name = "_memcached"
+path = "src/bin/memcached.rs"
+test = false
+
+[[bin]]
+name = "_test_memc"
+path = "src/bin/test_memcached.rs"
+test = false
+
+[[bin]]
 name = "_test_mr"
 path = "src/bin/test_mapreduce.rs"
 test = false

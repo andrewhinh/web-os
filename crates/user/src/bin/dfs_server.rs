@@ -14,6 +14,7 @@ use ulib::io::{Read, Write};
 use ulib::{eprintln, println, signal, socket, sys, sysinfo, thread};
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+const MAX_WORKERS: usize = 4;
 
 extern "C" fn worker_entry(listen_fd: usize, _unused: usize) {
     worker_loop(listen_fd);
@@ -104,7 +105,7 @@ fn main() {
     let _ = server.set_nonblock();
 
     let listen_fd = server.get_fd();
-    let worker_count = sysinfo::get_nprocs().saturating_sub(1);
+    let worker_count = sysinfo::get_nprocs().saturating_sub(1).min(MAX_WORKERS);
     for _ in 0..worker_count {
         if let Err(e) = thread::thread_create(worker_entry, listen_fd, 0) {
             eprintln!("dfs_server: thread_create err={}", e);

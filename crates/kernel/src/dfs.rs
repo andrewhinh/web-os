@@ -86,7 +86,7 @@ mod client {
     use crate::defs::{AsBytes, FromBytes};
     use crate::error::{Error::*, Result};
     use crate::fs::Path;
-    use crate::proc::{Cpus, either_copyin, either_copyout};
+    use crate::proc::{either_copyin, either_copyout};
     use crate::sleeplock::SleepLock;
     use crate::socket::{InetSocket, SOCK_STREAM};
     use crate::spinlock::Mutex;
@@ -95,19 +95,11 @@ mod client {
     use crate::vm::VirtAddr;
 
     struct ClientState {
-        pid: Option<usize>,
         socket: Option<Arc<InetSocket>>,
     }
 
-    static CLIENT: LazyLock<Mutex<ClientState>> = LazyLock::new(|| {
-        Mutex::new(
-            ClientState {
-                pid: None,
-                socket: None,
-            },
-            "dfs",
-        )
-    });
+    static CLIENT: LazyLock<Mutex<ClientState>> =
+        LazyLock::new(|| Mutex::new(ClientState { socket: None }, "dfs"));
     static RPC_LOCK: LazyLock<SleepLock<()>> = LazyLock::new(|| SleepLock::new((), "dfs_rpc"));
 
     fn reset_socket() {
@@ -115,13 +107,8 @@ mod client {
     }
 
     fn get_socket() -> Result<Arc<InetSocket>> {
-        let pid = Cpus::myproc().map(|p| p.pid()).unwrap_or(0);
         {
-            let mut guard = CLIENT.lock();
-            if guard.pid != Some(pid) {
-                guard.pid = Some(pid);
-                guard.socket = None;
-            }
+            let guard = CLIENT.lock();
             if let Some(sock) = guard.socket.as_ref() {
                 return Ok(Arc::clone(sock));
             }
@@ -129,10 +116,6 @@ mod client {
         let sock = InetSocket::new(SOCK_STREAM);
         sock.connect(DFS_ADDR, false)?;
         let mut guard = CLIENT.lock();
-        if guard.pid != Some(pid) {
-            guard.pid = Some(pid);
-            guard.socket = None;
-        }
         if let Some(existing) = guard.socket.as_ref() {
             return Ok(Arc::clone(existing));
         }

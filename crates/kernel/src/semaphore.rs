@@ -1,6 +1,7 @@
 use crate::{
     condvar::Condvar,
-    error::{Error::InvalidArgument, Result},
+    error::{Error::Interrupted, Error::InvalidArgument, Result},
+    proc::Cpus,
     spinlock::Mutex,
 };
 
@@ -53,6 +54,11 @@ impl Semaphore {
     pub fn wait(&self) -> Result<()> {
         let mut state = self.mutex.lock();
         loop {
+            if let Some(p) = Cpus::myproc()
+                && p.inner.lock().killed
+            {
+                return Err(Interrupted);
+            }
             if state.closed {
                 return Err(InvalidArgument);
             }

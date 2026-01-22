@@ -7,6 +7,7 @@ use std::{
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-env-changed=FORCE_MKFS");
 
     // build user programs
     let (uprogs_src_path, uprogs) = build_uprogs(&out_dir);

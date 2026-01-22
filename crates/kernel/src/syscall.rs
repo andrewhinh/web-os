@@ -97,6 +97,7 @@ pub enum SysCalls {
     LogCrash = 59,
     Getnprocs = 60,
     Getnprocsconf = 61,
+    Killpg = 62,
     Invalid = 0,
 }
 
@@ -220,6 +221,7 @@ impl SysCalls {
         (Fn::U(Self::logcrash), "(stage: usize)"),
         (Fn::I(Self::getnprocs), "()"),
         (Fn::I(Self::getnprocsconf), "()"),
+        (Fn::U(Self::killpg), "(pgid: usize, sig: usize)"),
     ];
 
     pub fn invalid() -> ! {
@@ -618,6 +620,22 @@ impl SysCalls {
                 Err(PermissionDenied)
             } else {
                 kill(pid, sig)
+            }
+        }
+    }
+
+    pub fn killpg() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let pgid = argraw(0);
+            let sig = argraw(1);
+
+            if pgid == 0 {
+                Err(PermissionDenied)
+            } else {
+                kill_pgrp(pgid, sig)
             }
         }
     }
@@ -1472,6 +1490,7 @@ impl SysCalls {
             59 => Self::LogCrash,
             60 => Self::Getnprocs,
             61 => Self::Getnprocsconf,
+            62 => Self::Killpg,
             _ => Self::Invalid,
         }
     }

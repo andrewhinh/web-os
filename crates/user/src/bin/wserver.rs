@@ -21,6 +21,7 @@ use ulib::{
 const DEFAULT_PORT: u16 = 10000;
 const DEFAULT_BUFFERS: usize = 4;
 const MAX_REQUEST_LINE: usize = 4096;
+const MAX_WORKERS: usize = 4;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false); // per-thread
 
@@ -126,7 +127,7 @@ fn main() -> ExitCode {
     let cfg = Box::leak(Box::new(cfg));
     let cfg_ptr = cfg as *const Config as usize;
     let listen_fd = server.get_fd();
-    let worker_count = sysinfo::get_nprocs().saturating_sub(1);
+    let worker_count = sysinfo::get_nprocs().saturating_sub(1).min(MAX_WORKERS);
     for _ in 0..worker_count {
         if let Err(e) = thread::thread_create(worker_entry, listen_fd, cfg_ptr) {
             eprintln!("wserver: thread_create err={}", e);

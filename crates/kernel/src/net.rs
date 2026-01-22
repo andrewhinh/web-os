@@ -765,6 +765,11 @@ impl TcpSocket {
             if self.state() == TcpState::Closed {
                 return Err(NotConnected);
             }
+            if let Some(p) = proc::Cpus::myproc()
+                && p.inner.lock().killed
+            {
+                return Err(Interrupted);
+            }
             wait_tcp(&mut seq);
         }
     }
