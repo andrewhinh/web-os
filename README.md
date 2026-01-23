@@ -6,11 +6,17 @@ A Rust re-implementation of xv6 for RISC-V, available on the web.
 
 ### Installation
 
-- [prek installation docs](https://prek.j178.dev/installation/)
-- [act installation docs](https://nektosact.com/installation/index.html)
+- [rustup](https://rustup.rs/)
+- [qemu](https://www.qemu.org/download/)
+- [npm](https://nodejs.org/en/download/)
+- [prek](https://prek.j178.dev/installation/)
+- [act](https://nektosact.com/installation/index.html)
+- [flyctl](https://fly.io/docs/flyctl/install/)
 
 ```bash
+npm i
 prek install
+fly auth login
 ```
 
 ### Commands
@@ -18,9 +24,16 @@ prek install
 ```bash
 cargo build --target riscv64gc-unknown-none-elf  # build kernel
 cargo run --target riscv64gc-unknown-none-elf    # run kernel
+mprocs                                           # run server and frontend
 
 prek run --all-files                             # run hooks
 act push --bind                                  # test CI
+docker build -t web-os .                         # test kernel build
+docker run --rm -p 8080:8080 web-os              # test kernel run
+
+fly launch
+fly ips allocate-v4                              # allocate a dedicated IPv4 for WebRTC
+fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>
 ```
 
 ## Roadmap
@@ -47,8 +60,11 @@ act push --bind                                  # test CI
   - [blog_os](https://os.phil-opp.com/async-await/)
   - [multi-processor multi-queue scheduler](https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf)
   - [event-based concurrency](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-events.pdf)
-- [x] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) + [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
-- [x] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/) and [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
+- [x] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) +
+      [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
+- [x] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/)
+      and
+      [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
 
 ### User-Space
 
@@ -64,7 +80,8 @@ act push --bind                                  # test CI
 
 ### App
 
-- [ ] stream kernel video to browser via VNC and WebRTC
+- [x] stream kernel video to browser via VNC and WebRTC
+- [ ] multiplex WebRTC connections for each machine instance
 
 ## Credit
 

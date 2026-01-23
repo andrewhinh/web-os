@@ -15,7 +15,7 @@ path = "crates/kernel/src/main.rs"
 test = false
 
 [workspace]
-members = ["crates/kernel", "crates/mkfs", "crates/user"]
+members = ["crates/app", "crates/kernel", "crates/mkfs", "crates/user"]
 resolver = "3"
 
 [workspace.package]

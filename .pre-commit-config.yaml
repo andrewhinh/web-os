@@ -35,3 +35,40 @@ repos:
         language: system
         files: (Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|\.cargo/|crates/(?!kernel/)|\.rs$)
         pass_filenames: false
+
+      - id: npm-ci
+        name: npm ci
+        entry: npm ci
+        language: system
+        files: ^(package\.json|package-lock\.json)$
+        pass_filenames: false
+
+      - id: npm-format
+        name: npm run format
+        entry: bash -c 'test -d node_modules || npm ci; npm run format'
+        language: system
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        pass_filenames: false
+
+      - id: npm-lint
+        name: npm run lint
+        entry: bash -c 'test -d node_modules || npm ci; npm run lint'
+        language: system
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        pass_filenames: false
+
+      - id: npm-check
+        name: npm run check
+        entry:
+          bash -c 'test -d node_modules || npm ci; npx svelte-kit sync; npm run
+          check'
+        language: system
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        pass_filenames: false
+
+      - id: npm-build
+        name: npm run build
+        entry: bash -c 'test -d node_modules || npm ci; npm run build'
+        language: system
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        pass_filenames: false

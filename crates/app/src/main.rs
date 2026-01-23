@@ -1,0 +1,133 @@
+use std::{path::PathBuf, process::Stdio};
+
+use axum::{
+    Router,
+    routing::{get_service, post},
+};
+use hyper::server::conn::http1;
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+use tokio::{net::TcpListener, process::Command};
+use tower_http::services::{ServeDir, ServeFile};
+
+mod webrtc_gateway;
+
+use webrtc_gateway::{AppState, candidate_handler, config_handler, offer_handler};
+
+const DEFAULT_PORT: u16 = 8080;
+const QEMU_ARGS: &[&str] = &[
+    "-machine",
+    "virt,aia=aplic-imsic",
+    "-bios",
+    "none",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-serial",
+    "mon:stdio",
+    "-global",
+    "virtio-mmio.force-legacy=false",
+    "-drive",
+    "file=target/fs.img,if=none,format=raw,id=x0",
+    "-device",
+    "virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1",
+    "-device",
+    "virtio-gpu-device,bus=virtio-mmio-bus.2,hostmem=256M",
+    "-device",
+    "virtio-keyboard-device,bus=virtio-mmio-bus.3",
+    "-device",
+    "virtio-mouse-device,bus=virtio-mmio-bus.4",
+    "-vnc",
+    "127.0.0.1:0,lossy=on,non-adaptive=on,key-delay-ms=0",
+    "-kernel",
+];
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    spawn_qemu().await?;
+
+    let static_dir = resolve_static_dir()?;
+    let index_html = static_dir.join("index.html");
+
+    let state = AppState::default();
+    let app = Router::new()
+        .route("/api/webrtc/config", axum::routing::get(config_handler))
+        .route("/api/webrtc/offer", post(offer_handler))
+        .route("/api/webrtc/candidate", post(candidate_handler))
+        .fallback_service(get_service(
+            ServeDir::new(&static_dir)
+                .append_index_html_on_directories(true)
+                .fallback(ServeFile::new(&index_html)),
+        ));
+    let app = app.with_state(state);
+
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    println!("http://localhost:{port}");
+    let listener = match TcpListener::bind(format!("[::]:{port}")).await {
+        Ok(l) => l,
+        Err(_) => TcpListener::bind(format!("0.0.0.0:{port}")).await?,
+    };
+
+    loop {
+        let (stream, _peer) = listener.accept().await?;
+        let _ = stream.set_nodelay(true);
+
+        let app = app.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let svc = TowerToHyperService::new(app);
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await
+            {
+                eprintln!("HTTP conn error: {err}");
+            }
+        });
+    }
+}
+
+fn resolve_static_dir() -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    let fallback = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../build"));
+
+    let resolved = [cwd.join("build"), cwd.join("../build"), fallback.clone()]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or(fallback);
+
+    Ok(resolved)
+}
+
+async fn spawn_qemu() -> anyhow::Result<()> {
+    let kernel_path = ["release", "debug"]
+        .into_iter()
+        .map(|p| PathBuf::from(format!("target/riscv64gc-unknown-none-elf/{p}/web-os")))
+        .find(|p| p.exists())
+        .ok_or_else(|| anyhow::anyhow!("Kernel not found. Run `cargo build` first."))?;
+
+    let mut cmd = Command::new("qemu-system-riscv64");
+    cmd.args(QEMU_ARGS);
+    cmd.arg(&kernel_path);
+
+    cmd.stdin(Stdio::null());
+
+    let mut child = cmd.spawn()?;
+
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => eprintln!("QEMU exited: {status}"),
+            Err(err) => eprintln!("QEMU wait failed: {err}"),
+        }
+    });
+
+    Ok(())
+}

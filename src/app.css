@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+@theme {
+  --font-retro: "VT323", "Courier New", monospace;
+  --color-crt-green: #00ff41;
+}
