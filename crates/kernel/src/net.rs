@@ -12,6 +12,7 @@ use crate::{
     array,
     error::{Error::*, Result},
     mpmc::{Receiver, SyncSender, sync_channel},
+    println,
     proc::{self, either_copyin, either_copyout},
     spinlock::Mutex,
     sync::LazyLock,
@@ -37,6 +38,8 @@ static TCP_LISTENERS: LazyLock<Mutex<BTreeMap<u16, Weak<TcpListener>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_listen"));
 static TCP_CONNS: LazyLock<Mutex<BTreeMap<ConnKey, Weak<TcpSocket>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_conns"));
+static TCP_PENDING: LazyLock<Mutex<BTreeMap<ConnKey, Arc<TcpSocket>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_pending"));
 
 static ARP_SEQ: AtomicUsize = AtomicUsize::new(0);
 static TCP_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -193,6 +196,9 @@ fn handle_arp(payload: &[u8]) {
 
     let local_ip = NET.lock().ip;
     if opcode == 1 && target_ip == local_ip {
+        // #region agent log
+        println!("net: arp_req src={} dst={}", sender_ip, target_ip);
+        // #endregion
         let _ = send_arp_reply(sender_mac, sender_ip);
     }
 }
@@ -216,7 +222,20 @@ fn handle_ipv4(payload: &[u8]) {
     let proto = payload[9];
     let src = Ipv4Addr::new(payload[12], payload[13], payload[14], payload[15]);
     let dst = Ipv4Addr::new(payload[16], payload[17], payload[18], payload[19]);
-    if dst != NET.lock().ip {
+    let local_ip = NET.lock().ip;
+    if dst != local_ip {
+        if proto == IP_PROTO_TCP && payload.len() >= ihl + 4 {
+            let data = &payload[ihl..total_len];
+            let dst_port = u16::from_be_bytes([data[2], data[3]]);
+            if (5901..=5908).contains(&dst_port) {
+                // #region agent log
+                println!(
+                    "net: tcp_dst_mismatch dst_port={} dst={} local={}",
+                    dst_port, dst, local_ip
+                );
+                // #endregion
+            }
+        }
         return;
     }
     let data = &payload[ihl..total_len];
@@ -266,6 +285,20 @@ fn tcp_input(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, data: &[u8]) {
     }
     let flags = data[13] as u16;
     let payload = &data[hdr_len..];
+    if (5901..=5908).contains(&dst_port) {
+        // #region agent log
+        println!(
+            "net: tcp_in dst_port={} src={}:{} flags=0x{:x} seq={} ack={} plen={}",
+            dst_port,
+            src_ip,
+            src_port,
+            flags,
+            seq,
+            ack,
+            payload.len()
+        );
+        // #endregion
+    }
     let remote = SocketAddrV4::new(src_ip, src_port);
     let key = ConnKey::new(dst_port, remote);
     let conn = {
@@ -283,13 +316,25 @@ fn tcp_input(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, data: &[u8]) {
         .lock()
         .get(&dst_port)
         .and_then(|w| w.upgrade());
+    if (5901..=5908).contains(&dst_port) {
+        // #region agent log
+        println!(
+            "net: tcp_syn dst_port={} src={} dst={} listener={}",
+            dst_port,
+            src_ip,
+            dst_ip,
+            listener.is_some()
+        );
+        // #endregion
+    }
     let Some(listener) = listener else { return };
     let conn = TcpSocket::new();
     conn.init_passive(dst_ip, dst_port, remote, Arc::downgrade(&listener), seq);
     TCP_CONNS.lock().insert(key, Arc::downgrade(&conn));
+    TCP_PENDING.lock().insert(key, Arc::clone(&conn));
     let syn_seq = conn.snd_nxt();
     conn.bump_snd(1);
-    let _ = send_tcp_segment_nonblock(
+    let syn_res = send_tcp_segment_nonblock(
         SocketAddrV4::new(dst_ip, dst_port),
         remote,
         syn_seq,
@@ -297,6 +342,14 @@ fn tcp_input(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, data: &[u8]) {
         0x12,
         &[],
     );
+    if (5901..=5908).contains(&dst_port) {
+        // #region agent log
+        match syn_res {
+            Ok(()) => println!("net: tcp_synack_sent dst_port={}", dst_port),
+            Err(e) => println!("net: tcp_synack_err dst_port={} err={}", dst_port, e),
+        }
+        // #endregion
+    }
 }
 
 fn insert_arp(ip: Ipv4Addr, mac: [u8; 6]) {
@@ -862,12 +915,64 @@ impl TcpSocket {
                 }
             }
             TcpState::SynReceived => {
+                if flags & 0x02 != 0
+                    && let (Some(local), Some(peer)) = (inner.local, inner.peer)
+                {
+                    let syn_seq = inner.snd_nxt.wrapping_sub(1);
+                    let ack = inner.rcv_nxt;
+                    drop(inner);
+                    let res = send_tcp_segment_nonblock(local, peer, syn_seq, ack, 0x12, &[]);
+                    // #region agent log
+                    if (5901..=5908).contains(&local.port()) {
+                        match res {
+                            Ok(()) => println!(
+                                "net: tcp_synack_retry port={} seq={} ack={}",
+                                local.port(),
+                                syn_seq,
+                                ack
+                            ),
+                            Err(e) => println!(
+                                "net: tcp_synack_retry_err port={} err={}",
+                                local.port(),
+                                e
+                            ),
+                        }
+                    }
+                    // #endregion
+                    inner = self.inner.lock();
+                }
+                if let Some(local) = inner.local
+                    && (5901..=5908).contains(&local.port())
+                {
+                    // #region agent log
+                    println!(
+                        "net: tcp_synrecv port={} flags=0x{:x} ack={} expect={} seq={} rcv_nxt={}",
+                        local.port(),
+                        flags,
+                        ack,
+                        inner.snd_nxt,
+                        seq,
+                        inner.rcv_nxt
+                    );
+                    // #endregion
+                }
                 if flags & 0x10 != 0 && ack == inner.snd_nxt {
                     inner.state = TcpState::Established;
+                    if let (Some(local), Some(peer)) = (inner.local, inner.peer) {
+                        let key = ConnKey::new(local.port(), peer);
+                        TCP_PENDING.lock().remove(&key);
+                    }
                     let listener = inner.listener.take();
                     drop(inner);
                     if let Some(l) = listener.and_then(|w| w.upgrade()) {
                         let _ = l.enqueue(Arc::clone(self));
+                    }
+                    if let Some(local) = self.local_addr()
+                        && (5901..=5908).contains(&local.port())
+                    {
+                        // #region agent log
+                        println!("net: tcp_established port={}", local.port());
+                        // #endregion
                     }
                     notify_tcp();
                 }
@@ -960,6 +1065,11 @@ impl TcpListener {
         let mut guard = TCP_LISTENERS.lock();
         if guard.get(&port).and_then(|w| w.upgrade()).is_some() {
             return Err(ResourceBusy);
+        }
+        if (5901..=5908).contains(&port) {
+            // #region agent log
+            println!("net: listen_register port={}", port);
+            // #endregion
         }
         guard.insert(port, Arc::downgrade(self));
         Ok(())

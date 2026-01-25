@@ -26,6 +26,31 @@ type ServerInit = {
 };
 
 const RFB_VERSION_38 = "RFB 003.008\n";
+const DEBUG_ENDPOINT =
+  "http://127.0.0.1:7242/ingest/81868999-9fe3-470c-b124-eef424aea164";
+
+function debugLog(
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+) {
+  // #region agent log
+  fetch(DEBUG_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "debug-session",
+      runId: "run1",
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
 
 // VNC keysyms: minimal set
 const KEYSYM = {
@@ -53,6 +78,10 @@ class ByteQueue {
   private buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   private waiters: Array<() => void> = [];
   private isClosed = false;
+
+  available() {
+    return this.buf.length;
+  }
 
   push(chunk: Uint8Array<ArrayBufferLike>) {
     if (this.isClosed) return;
@@ -105,6 +134,15 @@ export class RfbClient {
   private plY = 0;
   private lastAbsX = 0;
   private lastAbsY = 0;
+  private loggedFirstChunk = false;
+  private loggedChunkCount = 0;
+  private loggedMsgType = 0;
+  private loggedFbStart = false;
+  private loggedFbHeader = false;
+  private loggedFbRect = false;
+  private loggedFbRaw = false;
+  private loggedFbReq = false;
+  private loggedUpdate = false;
 
   constructor(opts: {
     dc: RTCDataChannel;
@@ -122,10 +160,46 @@ export class RfbClient {
     this.dc.addEventListener("message", (ev) => {
       if (typeof ev.data === "string") return;
       if (ev.data instanceof ArrayBuffer) {
-        this.q.push(new Uint8Array(ev.data));
+        if (!this.loggedFirstChunk) {
+          this.loggedFirstChunk = true;
+          debugLog("H", "src/lib/rfb.ts:dc.onmessage", "dc_message", {
+            bytes: ev.data.byteLength,
+            type: "arraybuffer",
+          });
+        }
+        const chunk = new Uint8Array(ev.data);
+        if (this.loggedChunkCount < 5) {
+          // #region agent log
+          debugLog("H", "src/lib/rfb.ts:dc.onmessage", "dc_message_sample", {
+            bytes: chunk.byteLength,
+            type: "arraybuffer",
+            first: chunk[0] ?? 0,
+            idx: this.loggedChunkCount + 1,
+          });
+          // #endregion
+          this.loggedChunkCount += 1;
+        }
+        this.q.push(chunk);
         return;
       }
       if (ev.data instanceof Blob) {
+        if (!this.loggedFirstChunk) {
+          this.loggedFirstChunk = true;
+          debugLog("H", "src/lib/rfb.ts:dc.onmessage", "dc_message", {
+            bytes: ev.data.size,
+            type: "blob",
+          });
+        }
+        if (this.loggedChunkCount < 5) {
+          // #region agent log
+          debugLog("H", "src/lib/rfb.ts:dc.onmessage", "dc_message_sample", {
+            bytes: ev.data.size,
+            type: "blob",
+            idx: this.loggedChunkCount + 1,
+          });
+          // #endregion
+          this.loggedChunkCount += 1;
+        }
         void ev.data
           .arrayBuffer()
           .then((ab) => this.q.push(new Uint8Array(ab)));
@@ -171,6 +245,7 @@ export class RfbClient {
 
   async start() {
     this.statusCb({ state: "connecting" });
+    debugLog("E", "src/lib/rfb.ts:start", "handshake_start", {});
     await this.handshake();
     this.attachInput();
     this.statusCb({
@@ -202,6 +277,15 @@ export class RfbClient {
     try {
       while (true) {
         const msgType = await this.readU8();
+        if (this.loggedMsgType < 5) {
+          // #region agent log
+          debugLog("I", "src/lib/rfb.ts:readLoop", "server_msg", {
+            msgType,
+            idx: this.loggedMsgType + 1,
+          });
+          // #endregion
+          this.loggedMsgType += 1;
+        }
         switch (msgType) {
           case 0:
             await this.handleFramebufferUpdate();
@@ -223,6 +307,11 @@ export class RfbClient {
         }
       }
     } catch (e) {
+      // #region agent log
+      debugLog("I", "src/lib/rfb.ts:readLoop", "read_loop_err", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      // #endregion
       this.statusCb({
         state: "error",
         error: e instanceof Error ? e.message : String(e),
@@ -232,17 +321,87 @@ export class RfbClient {
   }
 
   private async handleFramebufferUpdate() {
+    if (!this.loggedFbStart) {
+      // #region agent log
+      debugLog(
+        "J",
+        "src/lib/rfb.ts:handleFramebufferUpdate",
+        "fb_update_start",
+        {
+          avail: this.q.available(),
+        },
+      );
+      // #endregion
+      this.loggedFbStart = true;
+    }
     // padding
     await this.readU8();
     const rects = await this.readU16();
+    if (!this.loggedFbHeader) {
+      // #region agent log
+      debugLog(
+        "J",
+        "src/lib/rfb.ts:handleFramebufferUpdate",
+        "fb_update_header",
+        {
+          rects,
+          avail: this.q.available(),
+        },
+      );
+      // #endregion
+      this.loggedFbHeader = true;
+    }
     if (!this.imageData) return;
 
+    let firstRect: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      enc: number;
+    } | null = null;
+    let dirtyX0 = 0;
+    let dirtyY0 = 0;
+    let dirtyX1 = 0;
+    let dirtyY1 = 0;
     for (let i = 0; i < rects; i++) {
       const x = await this.readU16();
       const y = await this.readU16();
       const w = await this.readU16();
       const h = await this.readU16();
       const enc = await this.readI32();
+      if (firstRect === null) {
+        firstRect = { x, y, w, h, enc };
+        // init dirty bounds
+        dirtyX0 = x;
+        dirtyY0 = y;
+        dirtyX1 = x + w;
+        dirtyY1 = y + h;
+        if (!this.loggedFbRect) {
+          // #region agent log
+          debugLog(
+            "J",
+            "src/lib/rfb.ts:handleFramebufferUpdate",
+            "fb_update_rect0",
+            {
+              x,
+              y,
+              w,
+              h,
+              enc,
+              need: w * h * 4,
+              avail: this.q.available(),
+            },
+          );
+          // #endregion
+          this.loggedFbRect = true;
+        }
+      } else {
+        dirtyX0 = Math.min(dirtyX0, x);
+        dirtyY0 = Math.min(dirtyY0, y);
+        dirtyX1 = Math.max(dirtyX1, x + w);
+        dirtyY1 = Math.max(dirtyY1, y + h);
+      }
 
       if (enc !== 0) {
         // only RAW supported
@@ -251,10 +410,74 @@ export class RfbClient {
 
       const bytesPerPixel = 4;
       const raw = await this.q.readExactly(w * h * bytesPerPixel);
+      if (!this.loggedFbRaw) {
+        let sample = 0;
+        let nonZero = 0;
+        const sampleMax = Math.min(raw.length, 256);
+        for (let i = 0; i < sampleMax; i++) {
+          sample += 1;
+          if (raw[i] !== 0) nonZero += 1;
+        }
+        // #region agent log
+        debugLog(
+          "J",
+          "src/lib/rfb.ts:handleFramebufferUpdate",
+          "fb_update_raw_ok",
+          {
+            bytes: raw.length,
+            avail: this.q.available(),
+            sample,
+            nonZero,
+          },
+        );
+        // #endregion
+        this.loggedFbRaw = true;
+      }
       this.blitRaw32leRGBX(x, y, w, h, raw);
     }
-
-    this.ctx.putImageData(this.imageData, 0, 0);
+    if (firstRect) {
+      const dx = Math.max(0, Math.min(this.fbWidth, dirtyX0));
+      const dy = Math.max(0, Math.min(this.fbHeight, dirtyY0));
+      const dw = Math.max(0, Math.min(this.fbWidth, dirtyX1)) - dx;
+      const dh = Math.max(0, Math.min(this.fbHeight, dirtyY1)) - dy;
+      if (dw > 0 && dh > 0) {
+        this.ctx.putImageData(this.imageData, 0, 0, dx, dy, dw, dh);
+        // #region agent log
+        debugLog("K", "src/lib/rfb.ts:handleFramebufferUpdate", "canvas_put", {
+          rects,
+          size: `${this.fbWidth}x${this.fbHeight}`,
+          dirty: `${dx},${dy},${dw},${dh}`,
+        });
+        // #endregion
+      } else {
+        this.ctx.putImageData(this.imageData, 0, 0);
+        // #region agent log
+        debugLog("K", "src/lib/rfb.ts:handleFramebufferUpdate", "canvas_put", {
+          rects,
+          size: `${this.fbWidth}x${this.fbHeight}`,
+          dirty: "full",
+        });
+        // #endregion
+      }
+    } else {
+      this.ctx.putImageData(this.imageData, 0, 0);
+      // #region agent log
+      debugLog("K", "src/lib/rfb.ts:handleFramebufferUpdate", "canvas_put", {
+        rects,
+        size: `${this.fbWidth}x${this.fbHeight}`,
+        dirty: "full",
+      });
+      // #endregion
+    }
+    if (!this.loggedUpdate) {
+      // #region agent log
+      debugLog("U", "src/lib/rfb.ts:handleFramebufferUpdate", "fb_update", {
+        rects,
+        firstRect,
+      });
+      // #endregion
+      this.loggedUpdate = true;
+    }
   }
 
   private blitRaw32leRGBX(
@@ -320,6 +543,23 @@ export class RfbClient {
     w: number,
     h: number,
   ) {
+    if (!this.loggedFbReq) {
+      // #region agent log
+      debugLog(
+        "U",
+        "src/lib/rfb.ts:sendFramebufferUpdateRequest",
+        "fb_request",
+        {
+          incremental,
+          x,
+          y,
+          w,
+          h,
+        },
+      );
+      // #endregion
+      this.loggedFbReq = true;
+    }
     const b = new Uint8Array(1 + 1 + 2 + 2 + 2 + 2);
     b[0] = 3;
     b[1] = incremental ? 1 : 0;
@@ -502,9 +742,11 @@ export class RfbClient {
   }
 
   private async negotiateProtocol() {
+    debugLog("E", "src/lib/rfb.ts:negotiateProtocol", "protocol_wait", {});
     const ver = new TextDecoder().decode(await this.q.readExactly(12));
     if (!ver.startsWith("RFB ")) throw new Error(`bad RFB version: ${ver}`);
     this.sendAscii(RFB_VERSION_38);
+    debugLog("E", "src/lib/rfb.ts:negotiateProtocol", "protocol_ok", { ver });
   }
 
   private async negotiateSecurity() {
@@ -525,6 +767,10 @@ export class RfbClient {
     if (secResult !== 0) throw new Error(`RFB security result: ${secResult}`);
 
     this.sendU8(1); // shared-flag
+    debugLog("F", "src/lib/rfb.ts:negotiateSecurity", "security_ok", {
+      nSec,
+      secResult,
+    });
   }
 
   private async readServerInit(): Promise<ServerInit> {
@@ -533,6 +779,11 @@ export class RfbClient {
     const pixelFormat = await this.readPixelFormat();
     const nameLen = await this.readU32();
     const name = new TextDecoder().decode(await this.q.readExactly(nameLen));
+    debugLog("G", "src/lib/rfb.ts:readServerInit", "server_init", {
+      width,
+      height,
+      nameLen,
+    });
     return { width, height, name, pixelFormat };
   }
 

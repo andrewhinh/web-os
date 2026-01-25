@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::{
     convert::TryInto,
     sync::atomic::{Ordering, fence},
@@ -306,14 +307,13 @@ impl NetDevice {
         }
     }
 
-    fn handle_rx(&mut self) {
+    fn collect_rx(&mut self, frames: &mut Vec<Vec<u8>>) {
         while self.rx_used_idx != self.rx_used.idx {
             let used = self.rx_used.ring[self.rx_used_idx as usize % NUM];
             let id = used.id as usize;
             let len = (used.len as usize).min(RX_BUF_LEN);
             if len >= HDR_SIZE && id < NUM {
-                let frame = &self.rx_bufs[id][HDR_SIZE..len];
-                net::handle_frame(frame);
+                frames.push(self.rx_bufs[id][HDR_SIZE..len].to_vec());
             }
             let slot = self.rx_avail.idx as usize % NUM;
             self.rx_avail.ring[slot] = id as u16;
@@ -380,9 +380,15 @@ impl Mutex<NetDevice> {
             VirtioMMIO::InterruptAck.write(intr_stat & 0x3);
         }
         fence(Ordering::SeqCst);
-        let mut guard = self.lock();
-        guard.handle_tx();
-        guard.handle_rx();
+        let mut frames = Vec::new();
+        {
+            let mut guard = self.lock();
+            guard.handle_tx();
+            guard.collect_rx(&mut frames);
+        }
+        for frame in frames {
+            net::handle_frame(&frame);
+        }
     }
 
     pub fn mac_addr(&self) -> [u8; 6] {

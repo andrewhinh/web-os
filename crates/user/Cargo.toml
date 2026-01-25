@@ -254,6 +254,11 @@ name = "_wserver"
 path = "src/bin/wserver.rs"
 test = false
 
+[[bin]]
+name = "_seatd"
+path = "src/bin/seatd.rs"
+test = false
+
 [dependencies]
 libkernel = { workspace = true }
 

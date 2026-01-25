@@ -76,6 +76,10 @@ fn main() -> sys::Result<()> {
 
     journal_recover();
 
+    if let Err(e) = Command::new("/bin/seatd").spawn() {
+        eprintln!("init: seatd err={}", e);
+    }
+
     loop {
         println!("\ninit: starting sh\n");
         let mut child = Command::new("/bin/sh").spawn().unwrap();

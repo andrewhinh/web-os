@@ -347,6 +347,7 @@ pub struct ProcInner {
     pub pid: PId,         // Process ID
     pub pgid: usize,      // Process group ID
     pub sid: usize,       // Session ID
+    pub seat_id: usize,   // Console seat ID
     pub last_cpu: usize,  // Last CPU this process was run on
     pub sig_pending: u32,
     pub sig_handlers: [usize; NSIG],
@@ -849,6 +850,7 @@ impl ProcInner {
             pid: PId(0),
             pgid: 0,
             sid: 0,
+            seat_id: 0,
             last_cpu: 0,
             sig_pending: 0,
             sig_handlers: [SIG_DFL; NSIG],
@@ -1326,6 +1328,7 @@ pub fn fork() -> Result<usize> {
         c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
         c_guard.pgid = p_inner.pgid;
         c_guard.sid = p_inner.sid;
+        c_guard.seat_id = p_inner.seat_id;
         c_guard.stop_sig = 0;
         c_guard.stop_reported = false;
         c_guard.cont_pending = false;
@@ -1435,6 +1438,7 @@ pub fn clone(fcn: usize, arg1: usize, arg2: usize, stack: usize) -> Result<usize
         c_guard.sig_alarm_interval = p_inner.sig_alarm_interval;
         c_guard.pgid = p_inner.pgid;
         c_guard.sid = p_inner.sid;
+        c_guard.seat_id = p_inner.seat_id;
         c_guard.stop_sig = 0;
         c_guard.stop_reported = false;
         c_guard.cont_pending = false;

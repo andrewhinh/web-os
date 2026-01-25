@@ -12,6 +12,25 @@
   let sessionId: string | null = null;
   let pollTimer: number | null = null;
   let pendingLocal: RTCIceCandidateInit[] = [];
+  const DEBUG_ENDPOINT = "http://127.0.0.1:7242/ingest/81868999-9fe3-470c-b124-eef424aea164";
+
+  function debugLog(hypothesisId: string, location: string, message: string, data: Record<string, unknown>) {
+    // #region agent log
+    fetch(DEBUG_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "debug-session",
+        runId: "run1",
+        hypothesisId,
+        location,
+        message,
+        data,
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }
 
   const statusLabel = (s: RfbStatus) => {
     switch (s.state) {
@@ -29,6 +48,16 @@
   };
 
   const setStatus = (s: RfbStatus) => {
+    // #region agent log
+    if (s.state !== status.state) {
+      debugLog("S", "src/routes/+page.svelte:setStatus", "status_update", {
+        state: s.state,
+        prev: status.state,
+        width: (s as { width?: number }).width ?? null,
+        height: (s as { height?: number }).height ?? null,
+      });
+    }
+    // #endregion
     status = s;
     statusText = statusLabel(s);
   };
@@ -126,6 +155,7 @@
     };
 
     dc.onopen = () => {
+      debugLog("D", "src/routes/+page.svelte:dc.onopen", "dc_open", { label: dc?.label ?? "unknown" });
       if (!dc || !canvasEl) return;
       rfb = new RfbClient({ dc, canvas: canvasEl, statusCb: setStatus });
       void rfb.start().catch((err) => {
@@ -146,6 +176,7 @@
       { type: offer.type, sdp: offer.sdp },
     );
     sessionId = answer.session_id;
+    debugLog("A", "src/routes/+page.svelte:startSession", "offer_answered", { sessionId });
 
     await pc.setRemoteDescription({
       type: answer.type as RTCSessionDescriptionInit["type"],
@@ -165,10 +196,14 @@
   async function connect() {
     if (!canvasEl) throw new Error("canvas missing");
     setStatus({ state: "connecting" });
+    debugLog("A", "src/routes/+page.svelte:connect", "connect_start", {});
 
     const webrtcCfg = await getJson<{
       ice_servers: Array<{ urls: string[]; username?: string | null; credential?: string | null }>;
     }>("/api/webrtc/config");
+    debugLog("C", "src/routes/+page.svelte:connect", "config_loaded", {
+      ice_servers: webrtcCfg.ice_servers.length,
+    });
 
     initPeerConnection(webrtcCfg.ice_servers);
     await startSession();
