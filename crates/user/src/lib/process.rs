@@ -128,6 +128,7 @@ pub struct Command<'a> {
     stderr: Option<Stdio>,
     pgid: Option<usize>,
     foreground: bool,
+    seat_id: Option<usize>,
 }
 
 pub enum ChildStdio {
@@ -194,6 +195,7 @@ impl<'a> Command<'a> {
             stderr: None,
             pgid: None,
             foreground: false,
+            seat_id: None,
         }
     }
 
@@ -255,6 +257,11 @@ impl<'a> Command<'a> {
 
     pub fn foreground(&mut self, foreground: bool) -> &mut Self {
         self.foreground = foreground;
+        self
+    }
+
+    pub fn seat(&mut self, seat_id: usize) -> &mut Self {
+        self.seat_id = Some(seat_id);
         self
     }
 
@@ -352,6 +359,9 @@ impl<'a> Command<'a> {
                 if target != 0 {
                     let _ = sys::setpgid(0, target);
                 }
+            }
+            if let Some(seat_id) = self.seat_id {
+                let _ = sys::seatbind(seat_id);
             }
             let _ = signal::signal(signal::SIGINT, signal::SIG_DFL);
             let _ = signal::signal(signal::SIGTSTP, signal::SIG_DFL);

@@ -30,7 +30,7 @@ use crate::{
     stat::FileType,
     task,
     trap::TICKS,
-    vm::{Addr, UVAddr},
+    vm::{Addr, UVAddr, VirtAddr},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -98,6 +98,11 @@ pub enum SysCalls {
     Getnprocs = 60,
     Getnprocsconf = 61,
     Killpg = 62,
+    SeatCreate = 63,
+    SeatDestroy = 64,
+    SeatBind = 65,
+    SeatReadOutput = 66,
+    SeatWriteInput = 67,
     Invalid = 0,
 }
 
@@ -222,6 +227,14 @@ impl SysCalls {
         (Fn::I(Self::getnprocs), "()"),
         (Fn::I(Self::getnprocsconf), "()"),
         (Fn::U(Self::killpg), "(pgid: usize, sig: usize)"),
+        (Fn::I(Self::seatcreate), "()"),
+        (Fn::U(Self::seatdestroy), "(seat_id: usize)"),
+        (Fn::U(Self::seatbind), "(seat_id: usize)"),
+        (
+            Fn::I(Self::seatreadoutput),
+            "(seat_id: usize, buf: &mut [u8])",
+        ),
+        (Fn::I(Self::seatwriteinput), "(seat_id: usize, buf: &[u8])"),
     ];
 
     pub fn invalid() -> ! {
@@ -637,6 +650,89 @@ impl SysCalls {
             } else {
                 kill_pgrp(pgid, sig)
             }
+        }
+    }
+
+    pub fn seatcreate() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            console::seat_create()
+        }
+    }
+
+    pub fn seatdestroy() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let seat_id = argraw(0);
+            console::seat_destroy(seat_id)
+        }
+    }
+
+    pub fn seatbind() -> Result<()> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(());
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let seat_id = argraw(0);
+            console::seat_bind(seat_id)
+        }
+    }
+
+    pub fn seatreadoutput() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let seat_id = argraw(0);
+            let mut sbinfo: SBInfo = Default::default();
+            let sbinfo = SBInfo::from_arg(1, &mut sbinfo)?;
+            let mut remaining = sbinfo.len;
+            let mut dst: VirtAddr = sbinfo.ptr.into();
+            let mut total = 0usize;
+            let mut buf = [0u8; 256];
+            while remaining > 0 {
+                let chunk = core::cmp::min(remaining, buf.len());
+                let n = console::seat_read_output(seat_id, &mut buf[..chunk])?;
+                if n == 0 {
+                    break;
+                }
+                either_copyout(dst, &buf[..n])?;
+                dst += n;
+                total += n;
+                remaining -= n;
+                if n < chunk {
+                    break;
+                }
+            }
+            Ok(total)
+        }
+    }
+
+    pub fn seatwriteinput() -> Result<usize> {
+        #[cfg(not(all(target_os = "none", feature = "kernel")))]
+        return Ok(0);
+        #[cfg(all(target_os = "none", feature = "kernel"))]
+        {
+            let seat_id = argraw(0);
+            let mut sbinfo: SBInfo = Default::default();
+            let sbinfo = SBInfo::from_arg(1, &mut sbinfo)?;
+            let mut remaining = sbinfo.len;
+            let mut src: VirtAddr = sbinfo.ptr.into();
+            let mut total = 0usize;
+            let mut buf = [0u8; 256];
+            while remaining > 0 {
+                let chunk = core::cmp::min(remaining, buf.len());
+                either_copyin(&mut buf[..chunk], src)?;
+                console::seat_write_input(seat_id, &buf[..chunk])?;
+                src += chunk;
+                total += chunk;
+                remaining -= chunk;
+            }
+            Ok(total)
         }
     }
 
@@ -1491,6 +1587,11 @@ impl SysCalls {
             60 => Self::Getnprocs,
             61 => Self::Getnprocsconf,
             62 => Self::Killpg,
+            63 => Self::SeatCreate,
+            64 => Self::SeatDestroy,
+            65 => Self::SeatBind,
+            66 => Self::SeatReadOutput,
+            67 => Self::SeatWriteInput,
             _ => Self::Invalid,
         }
     }

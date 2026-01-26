@@ -1,4 +1,11 @@
-use std::{collections::HashMap, net::IpAddr, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    fs::OpenOptions,
+    io::Write,
+    net::IpAddr,
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
     Json,
@@ -34,15 +41,53 @@ use webrtc::{
 
 const DEFAULT_STUN_SERVER: &str = "stun:stun.l.google.com:19302";
 const DEFAULT_SESSION_OWNER: &str = "local";
+pub const VNC_PORT_BASE: u16 = 5901;
+pub const VNC_PORT_COUNT: u16 = 8;
+const DEBUG_LOG_PATH: &str = "/Users/andrewhinh/Desktop/projects/web-os/.cursor/debug.log";
 
-#[derive(Clone, Default)]
+fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(DEBUG_LOG_PATH)
+    {
+        let entry = serde_json::json!({
+            "sessionId": "debug-session",
+            "runId": "mux-slow-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": ts,
+        });
+        let _ = writeln!(file, "{}", entry);
+    }
+}
+#[derive(Clone)]
 pub struct AppState {
     sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
+    ports: Arc<Mutex<VecDeque<u16>>>,
 }
 
 struct Session {
     pc: Arc<RTCPeerConnection>,
     pending_candidates: Arc<Mutex<Vec<RTCIceCandidateInit>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        let ports = (0..VNC_PORT_COUNT)
+            .map(|i| VNC_PORT_BASE + i)
+            .collect::<VecDeque<_>>();
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            ports: Arc::new(Mutex::new(ports)),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -105,18 +150,37 @@ pub async fn offer_handler(
     let pending_candidates: Arc<Mutex<Vec<RTCIceCandidateInit>>> = Arc::new(Mutex::new(Vec::new()));
     let session_owner = current_session_owner();
 
-    let pc = create_peer_connection(pending_candidates.clone())
+    let vnc_port = allocate_vnc_port(state.ports.clone())
         .await
-        .map_err(internal_error)?;
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "no seats available".into()))?;
 
-    pc.set_remote_description(RTCSessionDescription::offer(req.sdp).map_err(internal_error)?)
-        .await
-        .map_err(internal_error)?;
+    let pc = match create_peer_connection(pending_candidates.clone(), vnc_port).await {
+        Ok(pc) => pc,
+        Err(err) => {
+            release_vnc_port(state.ports.clone(), vnc_port).await;
+            return Err(internal_error(err));
+        }
+    };
 
-    let answer = pc.create_answer(None).await.map_err(internal_error)?;
-    pc.set_local_description(answer.clone())
+    if let Err(err) = pc
+        .set_remote_description(RTCSessionDescription::offer(req.sdp).map_err(internal_error)?)
         .await
-        .map_err(internal_error)?;
+    {
+        release_vnc_port(state.ports.clone(), vnc_port).await;
+        return Err(internal_error(err));
+    }
+
+    let answer = match pc.create_answer(None).await {
+        Ok(answer) => answer,
+        Err(err) => {
+            release_vnc_port(state.ports.clone(), vnc_port).await;
+            return Err(internal_error(err));
+        }
+    };
+    if let Err(err) = pc.set_local_description(answer.clone()).await {
+        release_vnc_port(state.ports.clone(), vnc_port).await;
+        return Err(internal_error(err));
+    }
 
     {
         let mut sessions = state.sessions.lock().await;
@@ -128,7 +192,13 @@ pub async fn offer_handler(
             },
         );
     }
-    register_session_cleanup(session_uuid, state.sessions.clone(), pc.clone());
+    register_session_cleanup(
+        session_uuid,
+        state.sessions.clone(),
+        state.ports.clone(),
+        pc.clone(),
+        vnc_port,
+    );
 
     Ok(Json(OfferResponse {
         session_id: encode_session_id(&session_owner, session_uuid),
@@ -223,6 +293,7 @@ fn fly_replay_response(instance: &str) -> Response {
 
 async fn create_peer_connection(
     pending_candidates: Arc<Mutex<Vec<RTCIceCandidateInit>>>,
+    vnc_port: u16,
 ) -> anyhow::Result<Arc<RTCPeerConnection>> {
     let setting_engine = build_setting_engine().await?;
     let api = APIBuilder::new()
@@ -238,13 +309,17 @@ async fn create_peer_connection(
     );
 
     register_pending_candidate_handler(pc.clone(), pending_candidates);
-    register_vnc_channel(pc.clone());
+    register_vnc_channel(pc.clone(), vnc_port);
 
     Ok(pc)
 }
 
-async fn bridge_vnc(dc: Arc<RTCDataChannel>, closed: Arc<Notify>) -> anyhow::Result<()> {
-    let stream = TcpStream::connect("127.0.0.1:5900").await?;
+async fn bridge_vnc(
+    dc: Arc<RTCDataChannel>,
+    closed: Arc<Notify>,
+    vnc_port: u16,
+) -> anyhow::Result<()> {
+    let stream = TcpStream::connect(format!("127.0.0.1:{vnc_port}")).await?;
     let _ = stream.set_nodelay(true);
     let (tcp_r, tcp_w) = stream.into_split();
 
@@ -259,9 +334,9 @@ async fn bridge_vnc(dc: Arc<RTCDataChannel>, closed: Arc<Notify>) -> anyhow::Res
         })
     }));
 
-    let read_task = tokio::spawn(tcp_to_dc_loop(tcp_r, dc.clone(), closed.clone()));
+    let read_task = tokio::spawn(tcp_to_dc_loop(tcp_r, dc.clone(), closed.clone(), vnc_port));
 
-    dc_to_tcp_loop(&mut rx, tcp_w, closed).await?;
+    dc_to_tcp_loop(&mut rx, tcp_w, closed, vnc_port).await?;
 
     let _ = read_task.await;
     Ok(())
@@ -376,6 +451,16 @@ async fn build_setting_engine() -> anyhow::Result<SettingEngine> {
     Ok(setting_engine)
 }
 
+async fn allocate_vnc_port(ports: Arc<Mutex<VecDeque<u16>>>) -> Option<u16> {
+    let mut ports = ports.lock().await;
+    ports.pop_front()
+}
+
+async fn release_vnc_port(ports: Arc<Mutex<VecDeque<u16>>>, port: u16) {
+    let mut ports = ports.lock().await;
+    ports.push_back(port);
+}
+
 fn register_pending_candidate_handler(
     pc: Arc<RTCPeerConnection>,
     pending_candidates: Arc<Mutex<Vec<RTCIceCandidateInit>>>,
@@ -392,8 +477,9 @@ fn register_pending_candidate_handler(
     }));
 }
 
-fn register_vnc_channel(pc: Arc<RTCPeerConnection>) {
+fn register_vnc_channel(pc: Arc<RTCPeerConnection>, vnc_port: u16) {
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+        let port = vnc_port;
         Box::pin(async move {
             if dc.label() != "vnc" {
                 return;
@@ -401,7 +487,7 @@ fn register_vnc_channel(pc: Arc<RTCPeerConnection>) {
 
             let closed_notify = Arc::new(Notify::new());
             register_dc_close(&dc, closed_notify.clone());
-            register_dc_open(&dc, closed_notify);
+            register_dc_open(&dc, closed_notify, port);
         })
     }));
 }
@@ -415,14 +501,15 @@ fn register_dc_close(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>) {
     }));
 }
 
-fn register_dc_open(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>) {
+fn register_dc_open(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>, vnc_port: u16) {
     let dc_for_open = dc.clone();
+    let port = vnc_port;
     dc.on_open(Box::new(move || {
         let dc = dc_for_open.clone();
         let closed = closed_notify.clone();
         Box::pin(async move {
             tokio::spawn(async move {
-                if let Err(err) = bridge_vnc(dc, closed).await {
+                if let Err(err) = bridge_vnc(dc, closed, port).await {
                     eprintln!("VNC bridge error: {err}");
                 }
             });
@@ -433,10 +520,13 @@ fn register_dc_open(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>) {
 fn register_session_cleanup(
     session_id: Uuid,
     sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
+    ports: Arc<Mutex<VecDeque<u16>>>,
     pc: Arc<RTCPeerConnection>,
+    vnc_port: u16,
 ) {
     pc.on_peer_connection_state_change(Box::new(move |state| {
         let sessions = sessions.clone();
+        let ports = ports.clone();
         Box::pin(async move {
             if matches!(
                 state,
@@ -445,7 +535,10 @@ fn register_session_cleanup(
                     | RTCPeerConnectionState::Disconnected
             ) {
                 let mut sessions = sessions.lock().await;
-                sessions.remove(&session_id);
+                if sessions.remove(&session_id).is_some() {
+                    let mut ports = ports.lock().await;
+                    ports.push_back(vnc_port);
+                }
             }
         })
     }));
@@ -455,18 +548,84 @@ async fn tcp_to_dc_loop(
     mut tcp_r: OwnedReadHalf,
     dc: Arc<RTCDataChannel>,
     closed: Arc<Notify>,
+    vnc_port: u16,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0u8; 16 * 1024];
+    let mut last_read_at = Instant::now();
     loop {
         tokio::select! {
             _ = closed.notified() => break,
             res = tcp_r.read(&mut buf) => {
-                let n = res?;
-                if n == 0 {
-                    break;
+                let n = match res {
+                    Ok(0) => {
+                        // #region agent log
+                        debug_log(
+                            "H1",
+                            "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                            "tcp_read_eof",
+                            serde_json::json!({ "vnc_port": vnc_port }),
+                        );
+                        // #endregion
+                        break;
+                    }
+                    Ok(n) => n,
+                    Err(err) => {
+                        // #region agent log
+                        debug_log(
+                            "H1",
+                            "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                            "tcp_read_err",
+                            serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
+                        );
+                        // #endregion
+                        return Err(err.into());
+                    }
+                };
+                let now = Instant::now();
+                let gap_ms = now.duration_since(last_read_at).as_millis();
+                if gap_ms >= 500 {
+                    // #region agent log
+                    debug_log(
+                        "H1",
+                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                        "tcp_gap",
+                        serde_json::json!({
+                            "vnc_port": vnc_port,
+                            "gap_ms": gap_ms,
+                            "bytes": n
+                        }),
+                    );
+                    // #endregion
                 }
+                last_read_at = now;
                 let bytes = Bytes::copy_from_slice(&buf[..n]);
-                let _ = dc.send(&bytes).await?;
+                let send_start = Instant::now();
+                if let Err(err) = dc.send(&bytes).await {
+                    // #region agent log
+                    debug_log(
+                        "H2",
+                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                        "dc_send_err",
+                        serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
+                    );
+                    // #endregion
+                    return Err(err.into());
+                }
+                let send_ms = send_start.elapsed().as_millis();
+                if send_ms >= 50 {
+                    // #region agent log
+                    debug_log(
+                        "H2",
+                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                        "dc_send_slow",
+                        serde_json::json!({
+                            "vnc_port": vnc_port,
+                            "send_ms": send_ms,
+                            "bytes": n
+                        }),
+                    );
+                    // #endregion
+                }
             }
         }
     }
@@ -477,13 +636,40 @@ async fn dc_to_tcp_loop(
     rx: &mut mpsc::Receiver<Bytes>,
     mut tcp_w: OwnedWriteHalf,
     closed: Arc<Notify>,
+    vnc_port: u16,
 ) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = closed.notified() => break,
             opt = rx.recv() => {
                 let Some(bytes) = opt else { break };
-                tcp_w.write_all(&bytes).await?;
+                let write_start = Instant::now();
+                if let Err(err) = tcp_w.write_all(&bytes).await {
+                    // #region agent log
+                    debug_log(
+                        "H3",
+                        "crates/app/src/webrtc_gateway.rs:dc_to_tcp_loop",
+                        "tcp_write_err",
+                        serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
+                    );
+                    // #endregion
+                    return Err(err.into());
+                }
+                let write_ms = write_start.elapsed().as_millis();
+                if write_ms >= 50 {
+                    // #region agent log
+                    debug_log(
+                        "H3",
+                        "crates/app/src/webrtc_gateway.rs:dc_to_tcp_loop",
+                        "tcp_write_slow",
+                        serde_json::json!({
+                            "vnc_port": vnc_port,
+                            "write_ms": write_ms,
+                            "bytes": bytes.len()
+                        }),
+                    );
+                    // #endregion
+                }
             }
         }
     }

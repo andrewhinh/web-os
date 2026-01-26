@@ -7,11 +7,13 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernel::defs::{AsBytes, FromBytes};
-use kernel::dfs::{DFS_ADDR, DFS_MAGIC, DfsOp, DfsReq, DfsResp};
+use kernel::dfs::{
+    DFS_HOST, DFS_MAGIC, DFS_PORT_BASE, DFS_PORT_STRIDE, DFS_PORT_TRIES, DfsOp, DfsReq, DfsResp,
+};
 use kernel::error::Error;
 use ulib::fs::File;
 use ulib::io::{Read, Write};
-use ulib::{eprintln, println, signal, socket, sys, sysinfo, thread};
+use ulib::{env, eprintln, println, signal, socket, sys, sysinfo, thread};
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const MAX_WORKERS: usize = 4;
@@ -85,24 +87,53 @@ fn worker_loop(listen_fd: usize) {
 }
 
 fn main() {
-    println!("dfs_server: bind {}", DFS_ADDR);
-    let _ = signal::signal(signal::SIGTERM, term_handler as *const () as usize);
-    let mut server = match socket::socket(socket::AF_INET, socket::SOCK_STREAM, 0) {
-        Ok(sock) => sock,
-        Err(e) => {
-            eprintln!("dfs_server: socket err={}", e);
-            return;
+    let seat_id = env::var("SEAT_ID")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let base = DFS_PORT_BASE as usize;
+    let stride = DFS_PORT_STRIDE as usize;
+    let mut chosen = None;
+    let mut last_err = None;
+    for offset in 0..DFS_PORT_TRIES {
+        let port = base + seat_id.saturating_add(offset).saturating_mul(stride);
+        let addr = alloc::format!("{}:{}", DFS_HOST, port);
+        let mut server = match socket::socket(socket::AF_INET, socket::SOCK_STREAM, 0) {
+            Ok(sock) => sock,
+            Err(e) => {
+                eprintln!("dfs_server: socket err={}", e);
+                return;
+            }
+        };
+        match socket::bind(&server, addr.as_str()) {
+            Ok(()) => {
+                if let Err(e) = socket::listen(&server, 8) {
+                    eprintln!("dfs_server: listen err={}", e);
+                    return;
+                }
+                let _ = server.set_nonblock();
+                chosen = Some((addr, server));
+                break;
+            }
+            Err(sys::Error::ResourceBusy) => {
+                last_err = Some(sys::Error::ResourceBusy);
+                continue;
+            }
+            Err(e) => {
+                eprintln!("dfs_server: bind err={}", e);
+                return;
+            }
         }
+    }
+    let Some((addr, mut server)) = chosen else {
+        eprintln!(
+            "dfs_server: bind err={}",
+            last_err.unwrap_or(sys::Error::ResourceBusy)
+        );
+        return;
     };
-    if let Err(e) = socket::bind(&server, DFS_ADDR) {
-        eprintln!("dfs_server: bind err={}", e);
-        return;
-    }
-    if let Err(e) = socket::listen(&server, 8) {
-        eprintln!("dfs_server: listen err={}", e);
-        return;
-    }
-    let _ = server.set_nonblock();
+    println!("dfs_server: bind {}", addr);
+    let _ = signal::signal(signal::SIGTERM, term_handler as *const () as usize);
 
     let listen_fd = server.get_fd();
     let worker_count = sysinfo::get_nprocs().saturating_sub(1).min(MAX_WORKERS);

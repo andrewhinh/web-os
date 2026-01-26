@@ -12,7 +12,7 @@ use alloc::{
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ulib::{
-    eprintln,
+    env, eprintln,
     fs::File,
     io::{Read, Write},
     mutex::Mutex,
@@ -20,6 +20,8 @@ use ulib::{
 };
 
 const DEFAULT_PORT: u16 = 10001;
+const PORT_STRIDE: u16 = 3000;
+const PORT_TRIES: usize = 8;
 const DEFAULT_BUFFERS: usize = 4;
 const MAX_LINE: usize = 4096;
 const MAX_WORKERS: usize = 4;
@@ -91,9 +93,32 @@ fn main() -> sys::Result<()> {
     let _ = signal::signal(signal::SIGTERM, term_handler as *const () as usize);
 
     let mut server = socket::socket(socket::AF_INET, socket::SOCK_STREAM, 0)?;
-    let addr = format!(":{}", DEFAULT_PORT);
-    socket::bind(&server, &addr)?;
-    socket::listen(&server, DEFAULT_BUFFERS)?;
+    let seat_id = env::var("SEAT_ID")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let base = DEFAULT_PORT as usize;
+    let stride = PORT_STRIDE as usize;
+    let mut addr = None;
+    for offset in 0..PORT_TRIES {
+        let port = base + seat_id.saturating_add(offset).saturating_mul(stride);
+        if port > u16::MAX as usize {
+            break;
+        }
+        let candidate = format!(":{}", port);
+        match socket::bind(&server, &candidate) {
+            Ok(()) => {
+                socket::listen(&server, DEFAULT_BUFFERS)?;
+                addr = Some(candidate);
+                break;
+            }
+            Err(sys::Error::ResourceBusy) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let Some(addr) = addr else {
+        return Err(sys::Error::ResourceBusy);
+    };
     let _ = server.set_nonblock();
     println!("memcached: listen {}", addr);
 

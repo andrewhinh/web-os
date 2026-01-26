@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::{
-    console::CONS,
+    console,
     memlayout::{VIRTIO3, VIRTIO4},
     spinlock::Mutex,
     virtio_gpu::GPU,
@@ -367,12 +367,12 @@ impl Kbd {
 
     fn inject_bytes(bytes: &[u8]) {
         for &b in bytes {
-            CONS.intr(b);
+            console::seat_intr(0, b);
         }
     }
 
     fn inject_byte(b: u8) {
-        CONS.intr(b);
+        console::seat_intr(0, b);
     }
 
     fn is_letter_key(code: u16) -> bool {

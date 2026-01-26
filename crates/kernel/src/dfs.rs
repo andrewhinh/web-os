@@ -3,7 +3,10 @@ use crate::defs::{AsBytes, FromBytes};
 pub const DFS_MAGIC: u32 = 0x4446_5331; // "DFS1"
 pub const DFS_PREFIX: &str = "/dfs";
 pub const DFS_PREFIX_DIR: &str = "/dfs/";
-pub const DFS_ADDR: &str = "10.0.2.15:7000";
+pub const DFS_HOST: &str = "10.0.2.15";
+pub const DFS_PORT_BASE: u16 = 7000;
+pub const DFS_PORT_STRIDE: u16 = 3000;
+pub const DFS_PORT_TRIES: usize = 8;
 pub const DFS_MAX_CHUNK: usize = 512;
 
 #[repr(u16)]
@@ -75,78 +78,138 @@ unsafe impl FromBytes for DfsResp {}
 
 #[cfg(all(target_os = "none", feature = "kernel"))]
 mod client {
+    use alloc::collections::BTreeMap;
+    use alloc::string::String;
     use alloc::sync::Arc;
     use alloc::vec::Vec;
     use core::cmp::min;
     use core::mem::size_of;
 
     use super::{
-        DFS_ADDR, DFS_MAGIC, DFS_MAX_CHUNK, DFS_PREFIX, DFS_PREFIX_DIR, DfsOp, DfsReq, DfsResp,
+        DFS_HOST, DFS_MAGIC, DFS_MAX_CHUNK, DFS_PORT_BASE, DFS_PORT_STRIDE, DFS_PORT_TRIES,
+        DFS_PREFIX, DFS_PREFIX_DIR, DfsOp, DfsReq, DfsResp,
     };
     use crate::defs::{AsBytes, FromBytes};
     use crate::error::{Error::*, Result};
     use crate::fs::Path;
+    use crate::proc::Cpus;
     use crate::proc::{either_copyin, either_copyout};
     use crate::sleeplock::SleepLock;
     use crate::socket::{InetSocket, SOCK_STREAM};
     use crate::spinlock::Mutex;
     use crate::stat::Stat;
     use crate::sync::LazyLock;
+    use crate::trap::TICKS;
     use crate::vm::VirtAddr;
 
     struct ClientState {
-        socket: Option<Arc<InetSocket>>,
+        sockets: BTreeMap<u16, Arc<InetSocket>>,
     }
 
-    static CLIENT: LazyLock<Mutex<ClientState>> =
-        LazyLock::new(|| Mutex::new(ClientState { socket: None }, "dfs"));
+    static CLIENT: LazyLock<Mutex<ClientState>> = LazyLock::new(|| {
+        Mutex::new(
+            ClientState {
+                sockets: BTreeMap::new(),
+            },
+            "dfs",
+        )
+    });
     static RPC_LOCK: LazyLock<SleepLock<()>> = LazyLock::new(|| SleepLock::new((), "dfs_rpc"));
 
-    fn reset_socket() {
-        CLIENT.lock().socket = None;
+    fn seat_id() -> usize {
+        Cpus::myproc().map(|p| p.inner.lock().seat_id).unwrap_or(0)
     }
 
-    fn get_socket() -> Result<Arc<InetSocket>> {
-        {
-            let guard = CLIENT.lock();
-            if let Some(sock) = guard.socket.as_ref() {
-                return Ok(Arc::clone(sock));
+    fn dfs_port_candidates() -> [u16; DFS_PORT_TRIES] {
+        let seat = seat_id();
+        let stride = DFS_PORT_STRIDE as usize;
+        let base = DFS_PORT_BASE as usize;
+        let mut ports = [0u16; DFS_PORT_TRIES];
+        for (i, port) in ports.iter_mut().enumerate().take(DFS_PORT_TRIES) {
+            *port = (base + (seat.saturating_add(i)).saturating_mul(stride)).min(u16::MAX as usize)
+                as u16;
+        }
+        ports
+    }
+
+    fn dfs_addr(port: u16) -> String {
+        alloc::format!("{}:{}", DFS_HOST, port)
+    }
+
+    fn reset_socket(port: u16) {
+        CLIENT.lock().sockets.remove(&port);
+    }
+
+    fn get_socket() -> Result<(u16, Arc<InetSocket>)> {
+        let ports = dfs_port_candidates();
+        let mut last_err = None;
+        for &port in &ports {
+            {
+                let guard = CLIENT.lock();
+                if let Some(sock) = guard.sockets.get(&port) {
+                    return Ok((port, Arc::clone(sock)));
+                }
+            }
+            let sock = InetSocket::new(SOCK_STREAM);
+            let addr = dfs_addr(port);
+            match sock.connect(addr.as_str(), false) {
+                Ok(()) => {
+                    let mut guard = CLIENT.lock();
+                    if let Some(existing) = guard.sockets.get(&port) {
+                        return Ok((port, Arc::clone(existing)));
+                    }
+                    guard.sockets.insert(port, Arc::clone(&sock));
+                    return Ok((port, sock));
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    reset_socket(port);
+                }
             }
         }
-        let sock = InetSocket::new(SOCK_STREAM);
-        sock.connect(DFS_ADDR, false)?;
-        let mut guard = CLIENT.lock();
-        if let Some(existing) = guard.socket.as_ref() {
-            return Ok(Arc::clone(existing));
-        }
-        guard.socket = Some(Arc::clone(&sock));
-        Ok(sock)
+        Err(last_err.unwrap_or(NotConnected))
     }
 
     fn call(req: &DfsReq, payloads: &[&[u8]]) -> Result<(DfsResp, Vec<u8>)> {
-        let _guard = RPC_LOCK.lock();
-        let sock = get_socket()?;
+        let wait_start = *TICKS.lock();
+        let guard = RPC_LOCK.lock();
+        let wait_end = *TICKS.lock();
+        let wait_ticks = wait_end.saturating_sub(wait_start);
+        let (port, sock) = get_socket()?;
+        if wait_ticks >= 50 {
+            println!(
+                "DFSLOG|rpc_wait seat={} port={} wait={}",
+                seat_id(),
+                port,
+                wait_ticks
+            );
+        }
         if let Err(err) = send_all(&sock, req.as_bytes()) {
-            reset_socket();
+            reset_socket(port);
+            drop(guard);
             return Err(err);
         }
         for payload in payloads {
             if let Err(err) = send_all(&sock, payload) {
-                reset_socket();
+                reset_socket(port);
+                drop(guard);
                 return Err(err);
             }
         }
         let mut resp_buf = [0u8; size_of::<DfsResp>()];
         if let Err(err) = recv_all(&sock, &mut resp_buf) {
-            reset_socket();
+            reset_socket(port);
+            drop(guard);
             return Err(err);
         }
         let Some(resp) = DfsResp::read_from(&resp_buf) else {
-            reset_socket();
+            reset_socket(port);
+            drop(guard);
             return Err(InvalidArgument);
         };
         if resp.magic != DFS_MAGIC {
-            reset_socket();
+            reset_socket(port);
+            drop(guard);
             return Err(InvalidArgument);
         }
         let mut data = alloc::vec![0u8; resp.len as usize];
@@ -156,8 +219,19 @@ mod client {
             recv_all(&sock, &mut data)
         };
         if let Err(err) = res {
-            reset_socket();
+            reset_socket(port);
+            drop(guard);
             return Err(err);
+        }
+        let total_ticks = (*TICKS.lock()).saturating_sub(wait_start);
+        if total_ticks >= 200 {
+            println!(
+                "DFSLOG|rpc_slow seat={} port={} op={} dt={}",
+                seat_id(),
+                port,
+                req.op,
+                total_ticks
+            );
         }
         Ok((resp, data))
     }

@@ -32,6 +32,7 @@ pub mod mutex;
 pub mod path;
 pub mod pipe;
 pub mod process;
+pub mod seat;
 pub mod signal;
 pub mod socket;
 pub mod sysinfo;

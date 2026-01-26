@@ -37,6 +37,8 @@ static TCP_LISTENERS: LazyLock<Mutex<BTreeMap<u16, Weak<TcpListener>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_listen"));
 static TCP_CONNS: LazyLock<Mutex<BTreeMap<ConnKey, Weak<TcpSocket>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_conns"));
+static TCP_PENDING: LazyLock<Mutex<BTreeMap<ConnKey, Arc<TcpSocket>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new(), "tcp_pending"));
 
 static ARP_SEQ: AtomicUsize = AtomicUsize::new(0);
 static TCP_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -216,7 +218,8 @@ fn handle_ipv4(payload: &[u8]) {
     let proto = payload[9];
     let src = Ipv4Addr::new(payload[12], payload[13], payload[14], payload[15]);
     let dst = Ipv4Addr::new(payload[16], payload[17], payload[18], payload[19]);
-    if dst != NET.lock().ip {
+    let local_ip = NET.lock().ip;
+    if dst != local_ip {
         return;
     }
     let data = &payload[ihl..total_len];
@@ -287,9 +290,10 @@ fn tcp_input(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, data: &[u8]) {
     let conn = TcpSocket::new();
     conn.init_passive(dst_ip, dst_port, remote, Arc::downgrade(&listener), seq);
     TCP_CONNS.lock().insert(key, Arc::downgrade(&conn));
+    TCP_PENDING.lock().insert(key, Arc::clone(&conn));
     let syn_seq = conn.snd_nxt();
     conn.bump_snd(1);
-    let _ = send_tcp_segment_nonblock(
+    let syn_res = send_tcp_segment_nonblock(
         SocketAddrV4::new(dst_ip, dst_port),
         remote,
         syn_seq,
@@ -297,6 +301,7 @@ fn tcp_input(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, data: &[u8]) {
         0x12,
         &[],
     );
+    let _ = syn_res;
 }
 
 fn insert_arp(ip: Ipv4Addr, mac: [u8; 6]) {
@@ -862,8 +867,21 @@ impl TcpSocket {
                 }
             }
             TcpState::SynReceived => {
+                if flags & 0x02 != 0
+                    && let (Some(local), Some(peer)) = (inner.local, inner.peer)
+                {
+                    let syn_seq = inner.snd_nxt.wrapping_sub(1);
+                    let ack = inner.rcv_nxt;
+                    drop(inner);
+                    let _ = send_tcp_segment_nonblock(local, peer, syn_seq, ack, 0x12, &[]);
+                    inner = self.inner.lock();
+                }
                 if flags & 0x10 != 0 && ack == inner.snd_nxt {
                     inner.state = TcpState::Established;
+                    if let (Some(local), Some(peer)) = (inner.local, inner.peer) {
+                        let key = ConnKey::new(local.port(), peer);
+                        TCP_PENDING.lock().remove(&key);
+                    }
                     let listener = inner.listener.take();
                     drop(inner);
                     if let Some(l) = listener.and_then(|w| w.upgrade()) {

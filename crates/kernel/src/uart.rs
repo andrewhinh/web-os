@@ -189,7 +189,7 @@ mod async_tasks {
     };
 
     use crate::{
-        console::CONS,
+        console,
         memlayout::UART0_HART,
         spinlock::Mutex,
         task::{Task, spawn_on},
@@ -271,7 +271,7 @@ mod async_tasks {
     async fn rx_task() {
         loop {
             let b = NextRx.await;
-            CONS.intr(b);
+            console::seat_intr(0, b);
         }
     }
 }

@@ -19,6 +19,8 @@ use ulib::{
 };
 
 const DEFAULT_PORT: u16 = 10000;
+const PORT_STRIDE: u16 = 3000;
+const PORT_TRIES: usize = 8;
 const DEFAULT_BUFFERS: usize = 4;
 const MAX_REQUEST_LINE: usize = 4096;
 const MAX_WORKERS: usize = 4;
@@ -96,7 +98,7 @@ fn worker_loop(listen_fd: usize, cfg: &Config) {
 }
 
 fn main() -> ExitCode {
-    let cfg = match parse_args() {
+    let mut cfg = match parse_args() {
         Ok(cfg) => cfg,
         Err(()) => {
             eprintln!("usage: wserver [-d basedir] [-p port] [-b buffers] [-s schedalg]");
@@ -113,13 +115,38 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let addr = format!(":{}", cfg.port);
-    if let Err(e) = socket::bind(&server, &addr) {
-        eprintln!("wserver: bind {} err={}", addr, e);
-        return ExitCode::FAILURE;
+    let seat_id = env::var("SEAT_ID")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let base = cfg.port as usize;
+    let stride = PORT_STRIDE as usize;
+    let mut bound = None;
+    for offset in 0..PORT_TRIES {
+        let port = base + seat_id.saturating_add(offset).saturating_mul(stride);
+        if port > u16::MAX as usize {
+            break;
+        }
+        let addr = format!(":{}", port);
+        match socket::bind(&server, &addr) {
+            Ok(()) => {
+                if let Err(e) = socket::listen(&server, cfg.buffers) {
+                    eprintln!("wserver: listen err={}", e);
+                    return ExitCode::FAILURE;
+                }
+                cfg.port = port as u16;
+                bound = Some(addr);
+                break;
+            }
+            Err(sys::Error::ResourceBusy) => continue,
+            Err(e) => {
+                eprintln!("wserver: bind {} err={}", addr, e);
+                return ExitCode::FAILURE;
+            }
+        }
     }
-    if let Err(e) = socket::listen(&server, cfg.buffers) {
-        eprintln!("wserver: listen err={}", e);
+    if bound.is_none() {
+        eprintln!("wserver: bind err={}", sys::Error::ResourceBusy);
         return ExitCode::FAILURE;
     }
     let _ = server.set_nonblock();
