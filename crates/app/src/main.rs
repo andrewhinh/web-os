@@ -28,8 +28,7 @@ use webrtc_gateway::{
 const DEFAULT_PORT: u16 = 8080;
 const DEBUG_LOG_PATH: &str = "/Users/andrewhinh/Desktop/projects/web-os/.cursor/debug.log";
 
-fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    // #region agent log
+fn log_qemu_line(message: &str, line: &str) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -41,16 +40,15 @@ fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_jso
     {
         let entry = serde_json::json!({
             "sessionId": "debug-session",
-            "runId": "run1",
-            "hypothesisId": hypothesis_id,
-            "location": location,
+            "runId": "mux-slow-1",
+            "hypothesisId": "H4",
+            "location": "crates/app/src/main.rs:qemu_stdout",
             "message": message,
-            "data": data,
+            "data": { "line": line },
             "timestamp": ts,
         });
         let _ = writeln!(file, "{}", entry);
     }
-    // #endregion
 }
 fn build_netdev_arg() -> String {
     let mut arg = "user,id=net0".to_string();
@@ -175,12 +173,18 @@ async fn spawn_qemu() -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                debug_log(
-                    "Q",
-                    "crates/app/src/main.rs:qemu_stdout",
-                    "qemu_line",
-                    serde_json::json!({ "line": line }),
-                );
+                if line.contains("SEATDLOG|frame_stat")
+                    || line.contains("SEATDLOG|loop_gap")
+                    || line.contains("SEATDLOG|scroll")
+                {
+                    // #region agent log
+                    log_qemu_line("seatd_frame", &line);
+                    // #endregion
+                } else if line.contains("DFSLOG|") {
+                    // #region agent log
+                    log_qemu_line("dfs_rpc", &line);
+                    // #endregion
+                }
             }
         });
     }
@@ -188,12 +192,7 @@ async fn spawn_qemu() -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                debug_log(
-                    "Q",
-                    "crates/app/src/main.rs:qemu_stderr",
-                    "qemu_line",
-                    serde_json::json!({ "line": line }),
-                );
+                let _ = line;
             }
         });
     }

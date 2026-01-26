@@ -3,6 +3,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ulib::fs::{File, OpenOptions};
 use ulib::io::{Read, Write};
@@ -24,6 +25,9 @@ const CHAR_W: usize = 8 * SCALE;
 const CHAR_H: usize = 8 * SCALE;
 
 const FONT8X8: [[u8; 8]; 128] = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/font8x8.in"));
+
+static FRAME_LOG_BUDGET: AtomicUsize = AtomicUsize::new(40);
+static SCROLL_LOG_BUDGET: AtomicUsize = AtomicUsize::new(20);
 
 struct ConsoleSurface {
     buf: Vec<u32>,
@@ -134,6 +138,14 @@ impl ConsoleSurface {
             *p = self.bg;
         }
         self.mark_dirty_full();
+        if SCROLL_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+            // #region agent log
+            println!(
+                "SEATDLOG|scroll rows={} region={}x{}",
+                rows, self.width, self.height
+            );
+            // #endregion
+        }
     }
 
     fn newline(&mut self) {
@@ -338,6 +350,7 @@ impl ConsoleSurface {
 struct RfbState {
     input: Vec<u8>,
     want_update: bool,
+    stream: bool,
     cursor: Option<(u16, u16)>,
 }
 
@@ -346,6 +359,7 @@ impl RfbState {
         Self {
             input: Vec::new(),
             want_update: true,
+            stream: false,
             cursor: None,
         }
     }
@@ -605,12 +619,7 @@ fn parse_messages(state: &mut RfbState, seat_id: usize) -> sys::Result<()> {
                 let y = u16::from_be_bytes([state.input[idx + 4], state.input[idx + 5]]);
                 let w = u16::from_be_bytes([state.input[idx + 6], state.input[idx + 7]]);
                 let h = u16::from_be_bytes([state.input[idx + 8], state.input[idx + 9]]);
-                // #region agent log
-                println!(
-                    "SEATDLOG|fbreq seat={} incr={} x={} y={} w={} h={}",
-                    seat_id, incremental as u8, x, y, w, h
-                );
-                // #endregion
+                state.stream = incremental;
                 state.want_update = true;
                 idx += need;
             }
@@ -708,13 +717,8 @@ fn send_frame(
     let tiles_y = (region_h + tile_h - 1) / tile_h;
     let tiles = tiles_x * tiles_y;
     let total_bytes = region_w * region_h * 4 + tiles * 16;
-    // #region agent log
-    println!(
-        "SEATDLOG|send_frame_start seat={} tiles={} tile={}x{} region={}x{}@{},{} total={}",
-        seat_id, tiles, tile_w, tile_h, region_w, region_h, x0, y0, total_bytes
-    );
-    // #endregion
 
+    let start_tick = sys::uptime().unwrap_or(0);
     let mut stats = WriteStats::default();
     for ty in 0..tiles_y {
         let ry = y0 + ty * tile_h;
@@ -745,9 +749,28 @@ fn send_frame(
         }
     }
 
-    // #region agent log
-    println!("SEATDLOG|send_frame_done seat={} tiles={}", seat_id, tiles);
-    // #endregion
+    let end_tick = sys::uptime().unwrap_or(start_tick);
+    let dt = end_tick.saturating_sub(start_tick);
+    let big_dirty = region_h >= surface.height / 2 || region_w >= surface.width / 2;
+    if (dt >= 50 || stats.would_block > 0 || big_dirty)
+        && FRAME_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0
+    {
+        // #region agent log
+        println!(
+            "SEATDLOG|frame_stat seat={} dt={} bytes={} writes={} would_block={} region={}x{} \
+             tiles={} total={}",
+            seat_id,
+            dt,
+            stats.bytes,
+            stats.writes,
+            stats.would_block,
+            region_w,
+            region_h,
+            tiles,
+            total_bytes
+        );
+        // #endregion
+    }
     Ok(stats)
 }
 
@@ -765,18 +788,14 @@ fn spawn_shell(seat_id: usize) -> sys::Result<usize> {
         .foreground(true);
     cmd.env("PS1", "web-os$ ");
     cmd.env("TERM", "xterm");
+    cmd.env("SEAT_ID", alloc::format!("{}", seat_id));
     let child = cmd.spawn()?;
     Ok(child.pid())
 }
 
 fn handle_client(mut conn: File, port: u16) -> sys::Result<()> {
-    // #region agent log
-    println!("SEATDLOG|client_start port={}", port);
-    // #endregion
+    let _ = port;
     let seat_id = seat::create()?;
-    // #region agent log
-    println!("SEATDLOG|seat_created port={} seat_id={}", port, seat_id);
-    // #endregion
     let child_pid = match spawn_shell(seat_id) {
         Ok(pid) => pid,
         Err(e) => {
@@ -785,122 +804,74 @@ fn handle_client(mut conn: File, port: u16) -> sys::Result<()> {
         }
     };
 
-    // #region agent log
-    println!("SEATDLOG|handshake_start port={} seat_id={}", port, seat_id);
-    // #endregion
     if let Err(e) = handshake(&mut conn) {
-        // #region agent log
-        eprintln!(
-            "SEATDLOG|handshake_err port={} seat_id={} err={}",
-            port, seat_id, e
-        );
-        // #endregion
         let _ = sys::kill(child_pid, signal::SIGTERM);
         let _ = seat::destroy(seat_id);
         return Err(e);
     }
-    // #region agent log
-    println!("SEATDLOG|handshake_ok port={} seat_id={}", port, seat_id);
-    // #endregion
     let _ = conn.set_nonblock();
 
     let mut surface = ConsoleSurface::new();
     surface.clear();
     surface.clear_dirty();
     let mut rfb = RfbState::new();
-    let mut out_buf = [0u8; 256];
+    let mut out_buf = [0u8; 1024];
+    let mut last_loop_tick = sys::uptime().unwrap_or(0);
 
-    let mut exit_reason = "eof";
-    let mut logged_frame = false;
-    let mut logged_reads = 0usize;
-    let mut logged_out = 0usize;
-    let mut logged_stats = 0usize;
-    loop {
+    'main: loop {
+        let now = sys::uptime().unwrap_or(last_loop_tick);
+        let dt = now.saturating_sub(last_loop_tick);
+        if dt >= 200 {
+            // #region agent log
+            println!("SEATDLOG|loop_gap seat={} dt={}", seat_id, dt);
+            // #endregion
+        }
+        last_loop_tick = now;
         let mut progressed = false;
 
-        match conn.read(&mut out_buf) {
-            Ok(0) => {
-                exit_reason = "conn_eof";
-                break;
-            }
-            Ok(n) => {
-                if logged_reads < 5 {
-                    let first = out_buf[0];
-                    // #region agent log
-                    println!(
-                        "SEATDLOG|conn_read seat={} n={} first={}",
-                        seat_id, n, first
-                    );
-                    // #endregion
-                    logged_reads += 1;
+        let mut conn_read = false;
+        loop {
+            match conn.read(&mut out_buf) {
+                Ok(0) => {
+                    break 'main;
                 }
-                rfb.input.extend_from_slice(&out_buf[..n]);
-                parse_messages(&mut rfb, seat_id)?;
-                progressed = true;
-            }
-            Err(sys::Error::WouldBlock) => {}
-            Err(sys::Error::Interrupted) => {}
-            Err(_) => {
-                exit_reason = "conn_err";
-                break;
+                Ok(n) => {
+                    rfb.input.extend_from_slice(&out_buf[..n]);
+                    conn_read = true;
+                }
+                Err(sys::Error::WouldBlock) => break,
+                Err(sys::Error::Interrupted) => continue,
+                Err(_) => {
+                    break 'main;
+                }
             }
         }
+        if conn_read {
+            parse_messages(&mut rfb, seat_id)?;
+            progressed = true;
+        }
 
-        match seat::read_output(seat_id, &mut out_buf) {
-            Ok(0) => {}
-            Ok(n) => {
-                if logged_out < 5 {
-                    let first = out_buf[0];
-                    // #region agent log
-                    println!("SEATDLOG|seat_out seat={} n={} first={}", seat_id, n, first);
-                    // #endregion
-                    logged_out += 1;
+        loop {
+            match seat::read_output(seat_id, &mut out_buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    surface.write(&out_buf[..n]);
+                    progressed = true;
                 }
-                surface.write(&out_buf[..n]);
-                progressed = true;
-            }
-            Err(_) => {
-                exit_reason = "seat_read_err";
-                break;
+                Err(_) => {
+                    break 'main;
+                }
             }
         }
 
         if surface.dirty && rfb.want_update {
-            if !logged_frame {
-                // #region agent log
-                println!(
-                    "SEATDLOG|send_frame seat={} dirty={} want_update={} size={}x{}",
-                    seat_id,
-                    surface.dirty as u8,
-                    rfb.want_update as u8,
-                    surface.width,
-                    surface.height
-                );
-                // #endregion
-                logged_frame = true;
-            }
-            match send_frame(&mut conn, &surface, rfb.cursor, seat_id) {
-                Ok(stats) => {
-                    if logged_stats < 5 {
-                        // #region agent log
-                        println!(
-                            "SEATDLOG|send_frame_stats seat={} bytes={} writes={} would_block={}",
-                            seat_id, stats.bytes, stats.writes, stats.would_block
-                        );
-                        // #endregion
-                        logged_stats += 1;
-                    }
-                }
-                Err(_) => {
-                    // #region agent log
-                    eprintln!("SEATDLOG|send_frame_err seat={}", seat_id);
-                    // #endregion
-                    exit_reason = "send_frame_err";
-                    break;
-                }
+            if send_frame(&mut conn, &surface, rfb.cursor, seat_id).is_err() {
+                break 'main;
             }
             surface.clear_dirty();
-            rfb.want_update = false;
+            if !rfb.stream {
+                rfb.want_update = false;
+            }
             progressed = true;
         }
 
@@ -911,12 +882,6 @@ fn handle_client(mut conn: File, port: u16) -> sys::Result<()> {
 
     let _ = sys::kill(child_pid, signal::SIGTERM);
     let _ = seat::destroy(seat_id);
-    // #region agent log
-    println!(
-        "SEATDLOG|client_exit port={} seat_id={} reason={}",
-        port, seat_id, exit_reason
-    );
-    // #endregion
     Ok(())
 }
 
@@ -953,9 +918,6 @@ fn listen_loop(port: u16) -> sys::Result<()> {
 
     loop {
         let conn = socket::accept(&server)?;
-        // #region agent log
-        println!("SEATDLOG|accept port={}", port);
-        // #endregion
         let args = Box::new(ClientArgs { conn, port });
         let _ = thread::thread_create(client_entry, Box::into_raw(args) as usize, 0);
     }

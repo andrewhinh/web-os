@@ -4,7 +4,7 @@ use std::{
     io::Write,
     net::IpAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -46,7 +46,6 @@ pub const VNC_PORT_COUNT: u16 = 8;
 const DEBUG_LOG_PATH: &str = "/Users/andrewhinh/Desktop/projects/web-os/.cursor/debug.log";
 
 fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    // #region agent log
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -58,7 +57,7 @@ fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_jso
     {
         let entry = serde_json::json!({
             "sessionId": "debug-session",
-            "runId": "run1",
+            "runId": "mux-slow-1",
             "hypothesisId": hypothesis_id,
             "location": location,
             "message": message,
@@ -67,9 +66,7 @@ fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_jso
         });
         let _ = writeln!(file, "{}", entry);
     }
-    // #endregion
 }
-
 #[derive(Clone)]
 pub struct AppState {
     sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
@@ -156,15 +153,6 @@ pub async fn offer_handler(
     let vnc_port = allocate_vnc_port(state.ports.clone())
         .await
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "no seats available".into()))?;
-    debug_log(
-        "A",
-        "crates/app/src/webrtc_gateway.rs:offer_handler",
-        "offer_alloc",
-        serde_json::json!({
-            "session_uuid": session_uuid.to_string(),
-            "vnc_port": vnc_port,
-        }),
-    );
 
     let pc = match create_peer_connection(pending_candidates.clone(), vnc_port).await {
         Ok(pc) => pc,
@@ -224,7 +212,6 @@ pub async fn candidate_handler(
     State(state): State<AppState>,
     Json(req): Json<CandidateRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    let inbound = req.candidate.is_some();
     let current_owner = current_session_owner();
     let (owner, session_uuid) = decode_session_id(&req.session_id, &current_owner)
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid session_id".into()))?;
@@ -248,16 +235,6 @@ pub async fn candidate_handler(
     }
 
     let candidates = drain_pending_candidates(pending_candidates).await;
-    debug_log(
-        "C",
-        "crates/app/src/webrtc_gateway.rs:candidate_handler",
-        "candidate_sync",
-        serde_json::json!({
-            "session_uuid": session_uuid.to_string(),
-            "inbound": inbound,
-            "outbound_count": candidates.len(),
-        }),
-    );
 
     Ok(Json(CandidateResponse { candidates }).into_response())
 }
@@ -342,18 +319,7 @@ async fn bridge_vnc(
     closed: Arc<Notify>,
     vnc_port: u16,
 ) -> anyhow::Result<()> {
-    let connect_result = TcpStream::connect(format!("127.0.0.1:{vnc_port}")).await;
-    debug_log(
-        "B",
-        "crates/app/src/webrtc_gateway.rs:bridge_vnc",
-        "bridge_connect",
-        serde_json::json!({
-            "vnc_port": vnc_port,
-            "ok": connect_result.is_ok(),
-            "error": connect_result.as_ref().err().map(|e| e.to_string()),
-        }),
-    );
-    let stream = connect_result?;
+    let stream = TcpStream::connect(format!("127.0.0.1:{vnc_port}")).await?;
     let _ = stream.set_nodelay(true);
     let (tcp_r, tcp_w) = stream.into_split();
 
@@ -370,7 +336,7 @@ async fn bridge_vnc(
 
     let read_task = tokio::spawn(tcp_to_dc_loop(tcp_r, dc.clone(), closed.clone(), vnc_port));
 
-    dc_to_tcp_loop(&mut rx, tcp_w, closed).await?;
+    dc_to_tcp_loop(&mut rx, tcp_w, closed, vnc_port).await?;
 
     let _ = read_task.await;
     Ok(())
@@ -542,15 +508,6 @@ fn register_dc_open(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>, vnc_po
         let dc = dc_for_open.clone();
         let closed = closed_notify.clone();
         Box::pin(async move {
-            debug_log(
-                "D",
-                "crates/app/src/webrtc_gateway.rs:register_dc_open",
-                "dc_open",
-                serde_json::json!({
-                    "label": dc.label(),
-                    "vnc_port": port,
-                }),
-            );
             tokio::spawn(async move {
                 if let Err(err) = bridge_vnc(dc, closed, port).await {
                     eprintln!("VNC bridge error: {err}");
@@ -594,104 +551,80 @@ async fn tcp_to_dc_loop(
     vnc_port: u16,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0u8; 16 * 1024];
-    debug_log(
-        "H",
-        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-        "tcp_read_start",
-        serde_json::json!({ "vnc_port": vnc_port }),
-    );
-    let mut logged = 0usize;
-    let mut total_bytes: usize = 0;
-    let marks: [usize; 4] = [256 * 1024, 1024 * 1024, 2 * 1024 * 1024, 3 * 1024 * 1024];
-    let mut mark_idx = 0usize;
-    let mut logged_frame = 0usize;
+    let mut last_read_at = Instant::now();
     loop {
         tokio::select! {
             _ = closed.notified() => break,
             res = tcp_r.read(&mut buf) => {
                 let n = match res {
                     Ok(0) => {
+                        // #region agent log
                         debug_log(
-                            "H",
+                            "H1",
                             "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
                             "tcp_read_eof",
                             serde_json::json!({ "vnc_port": vnc_port }),
                         );
+                        // #endregion
                         break;
                     }
                     Ok(n) => n,
                     Err(err) => {
+                        // #region agent log
                         debug_log(
-                            "H",
+                            "H1",
                             "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
                             "tcp_read_err",
                             serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
                         );
+                        // #endregion
                         return Err(err.into());
                     }
                 };
-                let first = buf.get(0).copied().unwrap_or(0);
-                if logged < 10 {
-                    debug_log(
-                        "H",
-                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-                        "tcp_read",
-                        serde_json::json!({
-                            "bytes": n,
-                            "idx": logged + 1,
-                            "first": first
-                        }),
-                    );
-                    logged += 1;
-                }
-                let frame_log = (first == 0 || n > 1024) && logged_frame < 5;
-                let frame_idx = if frame_log { logged_frame + 1 } else { 0 };
-                if frame_log {
+                let now = Instant::now();
+                let gap_ms = now.duration_since(last_read_at).as_millis();
+                if gap_ms >= 500 {
                     // #region agent log
                     debug_log(
-                        "H",
+                        "H1",
                         "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-                        "tcp_read_frame",
-                        serde_json::json!({ "bytes": n, "idx": frame_idx, "first": first }),
-                    );
-                    // #endregion
-                }
-                total_bytes = total_bytes.saturating_add(n);
-                while mark_idx < marks.len() && total_bytes >= marks[mark_idx] {
-                    // #region agent log
-                    debug_log(
-                        "H",
-                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-                        "tcp_read_mark",
+                        "tcp_gap",
                         serde_json::json!({
                             "vnc_port": vnc_port,
-                            "total": total_bytes,
-                            "mark": marks[mark_idx]
+                            "gap_ms": gap_ms,
+                            "bytes": n
                         }),
                     );
                     // #endregion
-                    mark_idx += 1;
                 }
+                last_read_at = now;
                 let bytes = Bytes::copy_from_slice(&buf[..n]);
+                let send_start = Instant::now();
                 if let Err(err) = dc.send(&bytes).await {
-                    debug_log(
-                        "H",
-                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-                        "dc_send_err",
-                        serde_json::json!({ "error": err.to_string() }),
-                    );
-                    return Err(err.into());
-                }
-                if frame_log {
                     // #region agent log
                     debug_log(
-                        "H",
+                        "H2",
                         "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
-                        "dc_send_ok",
-                        serde_json::json!({ "bytes": n, "idx": frame_idx }),
+                        "dc_send_err",
+                        serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
                     );
                     // #endregion
-                    logged_frame += 1;
+                    return Err(err.into());
+                }
+                let send_ms = send_start.elapsed().as_millis();
+                if send_ms >= 50 {
+                    // #region agent log
+                    debug_log(
+                        "H2",
+                        "crates/app/src/webrtc_gateway.rs:tcp_to_dc_loop",
+                        "dc_send_slow",
+                        serde_json::json!({
+                            "vnc_port": vnc_port,
+                            "send_ms": send_ms,
+                            "bytes": n
+                        }),
+                    );
+                    // #endregion
                 }
             }
         }
@@ -703,34 +636,39 @@ async fn dc_to_tcp_loop(
     rx: &mut mpsc::Receiver<Bytes>,
     mut tcp_w: OwnedWriteHalf,
     closed: Arc<Notify>,
+    vnc_port: u16,
 ) -> anyhow::Result<()> {
-    let mut logged = 0usize;
     loop {
         tokio::select! {
             _ = closed.notified() => break,
             opt = rx.recv() => {
                 let Some(bytes) = opt else { break };
-                if logged < 10 {
-                    debug_log(
-                        "H",
-                        "crates/app/src/webrtc_gateway.rs:dc_to_tcp_loop",
-                        "dc_write",
-                        serde_json::json!({
-                            "bytes": bytes.len(),
-                            "idx": logged + 1,
-                            "first": bytes.first().copied().unwrap_or(0)
-                        }),
-                    );
-                    logged += 1;
-                }
+                let write_start = Instant::now();
                 if let Err(err) = tcp_w.write_all(&bytes).await {
+                    // #region agent log
                     debug_log(
-                        "H",
+                        "H3",
                         "crates/app/src/webrtc_gateway.rs:dc_to_tcp_loop",
                         "tcp_write_err",
-                        serde_json::json!({ "error": err.to_string() }),
+                        serde_json::json!({ "vnc_port": vnc_port, "error": err.to_string() }),
                     );
+                    // #endregion
                     return Err(err.into());
+                }
+                let write_ms = write_start.elapsed().as_millis();
+                if write_ms >= 50 {
+                    // #region agent log
+                    debug_log(
+                        "H3",
+                        "crates/app/src/webrtc_gateway.rs:dc_to_tcp_loop",
+                        "tcp_write_slow",
+                        serde_json::json!({
+                            "vnc_port": vnc_port,
+                            "write_ms": write_ms,
+                            "bytes": bytes.len()
+                        }),
+                    );
+                    // #endregion
                 }
             }
         }

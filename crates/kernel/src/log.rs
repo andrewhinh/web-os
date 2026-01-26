@@ -75,10 +75,19 @@ fn crash_if_armed(stage: LogCrashStage) {
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct LogHeader {
     n: u32,
     block: [u32; LOGSIZE],
+}
+
+impl Default for LogHeader {
+    fn default() -> Self {
+        Self {
+            n: 0,
+            block: [0; LOGSIZE],
+        }
+    }
 }
 
 pub struct Log {

@@ -27,8 +27,8 @@ const fn ctrl(x: u8) -> u8 {
     x - b'@'
 }
 
-const INPUT_BUF_SIZE: usize = 128;
-const OUTPUT_BUF_SIZE: usize = 4096;
+const INPUT_BUF_SIZE: usize = 256;
+const OUTPUT_BUF_SIZE: usize = 16384;
 const MAX_SEATS: usize = 8;
 
 pub struct Seats {

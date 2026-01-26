@@ -12,24 +12,11 @@
   let sessionId: string | null = null;
   let pollTimer: number | null = null;
   let pendingLocal: RTCIceCandidateInit[] = [];
-  const DEBUG_ENDPOINT = "http://127.0.0.1:7242/ingest/81868999-9fe3-470c-b124-eef424aea164";
-
   function debugLog(hypothesisId: string, location: string, message: string, data: Record<string, unknown>) {
-    // #region agent log
-    fetch(DEBUG_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "debug-session",
-        runId: "run1",
-        hypothesisId,
-        location,
-        message,
-        data,
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    void hypothesisId;
+    void location;
+    void message;
+    void data;
   }
 
   const statusLabel = (s: RfbStatus) => {
