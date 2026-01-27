@@ -36,6 +36,6 @@ port = 3478
 
 [[vm]]
 memory = '2048mb'
-cpu_kind = 'performance'
+cpu_kind = 'shared'
 cpus = 4
 memory_mb = 2048
