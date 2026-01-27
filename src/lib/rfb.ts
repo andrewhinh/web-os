@@ -1,3 +1,5 @@
+import { Unzlib } from "fflate";
+
 export type RfbStatus =
   | { state: "idle" }
   | { state: "connecting" }
@@ -26,6 +28,8 @@ type ServerInit = {
 };
 
 const RFB_VERSION_38 = "RFB 003.008\n";
+const RFB_ENCODING_RAW = 0;
+const RFB_ENCODING_ZLIB = 6;
 
 // VNC keysyms: minimal set
 const KEYSYM = {
@@ -105,6 +109,9 @@ export class RfbClient {
   private plY = 0;
   private lastAbsX = 0;
   private lastAbsY = 0;
+  private zlibStream: Unzlib | null = null;
+  private zlibTarget: Uint8Array | null = null;
+  private zlibTargetOff = 0;
 
   constructor(opts: {
     dc: RTCDataChannel;
@@ -188,7 +195,7 @@ export class RfbClient {
     const init = await this.readServerInit();
     this.initFramebuffer(init);
     this.sendPreferredPixelFormat();
-    this.sendSetEncodings([0]); // RAW only
+    this.sendSetEncodings([RFB_ENCODING_ZLIB, RFB_ENCODING_RAW]);
     this.sendFramebufferUpdateRequest(false, 0, 0, init.width, init.height);
     this.statusCb({
       state: "connected",
@@ -244,20 +251,161 @@ export class RfbClient {
       const h = await this.readU16();
       const enc = await this.readI32();
 
-      if (enc !== 0) {
-        // only RAW supported
-        throw new Error(`Unsupported encoding: ${enc}`);
+      const bytesPerPixel = this.bytesPerPixel();
+      const expectedLen = w * h * bytesPerPixel;
+      if (enc === RFB_ENCODING_RAW) {
+        if (expectedLen === 0) continue;
+        const raw = await this.q.readExactly(expectedLen);
+        this.blitRaw(x, y, w, h, raw, bytesPerPixel);
+        continue;
       }
 
-      const bytesPerPixel = 4;
-      const raw = await this.q.readExactly(w * h * bytesPerPixel);
-      this.blitRaw32leRGBX(x, y, w, h, raw);
+      if (enc === RFB_ENCODING_ZLIB) {
+        const zlen = await this.readU32();
+        if (expectedLen === 0 && zlen === 0) continue;
+        const zdata = await this.q.readExactly(zlen);
+        const inflated = this.inflateZlibRect(zdata, expectedLen);
+        this.blitRaw(x, y, w, h, inflated, bytesPerPixel);
+        continue;
+      }
+
+      throw new Error(`Unsupported encoding: ${enc}`);
     }
 
     this.ctx.putImageData(this.imageData, 0, 0);
   }
 
-  private blitRaw32leRGBX(
+  private ensureZlibStream() {
+    if (this.zlibStream) return;
+    this.zlibStream = new Unzlib((chunk) => {
+      if (!this.zlibTarget) return;
+      const next = this.zlibTargetOff + chunk.length;
+      if (next > this.zlibTarget.length) {
+        throw new Error(
+          `Zlib rect overflow: got ${next}, expected ${this.zlibTarget.length}`,
+        );
+      }
+      this.zlibTarget.set(chunk, this.zlibTargetOff);
+      this.zlibTargetOff = next;
+    });
+  }
+
+  private inflateZlibRect(data: Uint8Array, expectedLen: number): Uint8Array {
+    if (expectedLen < 0) {
+      throw new Error(`Invalid zlib rect length: ${expectedLen}`);
+    }
+    this.ensureZlibStream();
+    const out = new Uint8Array(expectedLen);
+    this.zlibTarget = out;
+    this.zlibTargetOff = 0;
+    this.zlibStream?.push(data, false);
+
+    const got = this.zlibTargetOff;
+    this.zlibTarget = null;
+
+    if (got !== expectedLen) {
+      throw new Error(
+        `Zlib rect size mismatch: got ${got}, expected ${expectedLen}`,
+      );
+    }
+
+    return out;
+  }
+
+  private bytesPerPixel(): number {
+    const pf = this.pf;
+    if (!pf) return 4;
+    return Math.max(1, Math.floor(pf.bitsPerPixel / 8));
+  }
+
+  private isFastBgrx32(pf: PixelFormat | null): boolean {
+    return !!(
+      pf &&
+      pf.bitsPerPixel === 32 &&
+      pf.bigEndian === 0 &&
+      pf.trueColor === 1 &&
+      pf.redMax === 255 &&
+      pf.greenMax === 255 &&
+      pf.blueMax === 255 &&
+      pf.redShift === 16 &&
+      pf.greenShift === 8 &&
+      pf.blueShift === 0
+    );
+  }
+
+  private isFastRgbx32(pf: PixelFormat | null): boolean {
+    return !!(
+      pf &&
+      pf.bitsPerPixel === 32 &&
+      pf.bigEndian === 0 &&
+      pf.trueColor === 1 &&
+      pf.redMax === 255 &&
+      pf.greenMax === 255 &&
+      pf.blueMax === 255 &&
+      pf.redShift === 0 &&
+      pf.greenShift === 8 &&
+      pf.blueShift === 16
+    );
+  }
+
+  private blitRaw(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    raw: Uint8Array,
+    bytesPerPixel: number,
+  ) {
+    const pf = this.pf;
+    if (!this.imageData || !pf) return;
+    if (bytesPerPixel === 4 && this.isFastBgrx32(pf)) {
+      this.blitRaw32leBgrx(x, y, w, h, raw);
+      return;
+    }
+    if (bytesPerPixel === 4 && this.isFastRgbx32(pf)) {
+      this.blitRaw32leRgbx(x, y, w, h, raw);
+      return;
+    }
+    if (!pf.trueColor) {
+      throw new Error("RFB trueColor=false not supported");
+    }
+
+    const dst = this.imageData.data;
+    const fbW = this.fbWidth;
+    const rMul = pf.redMax === 255 ? 1 : 255 / pf.redMax;
+    const gMul = pf.greenMax === 255 ? 1 : 255 / pf.greenMax;
+    const bMul = pf.blueMax === 255 ? 1 : 255 / pf.blueMax;
+
+    let srcOff = 0;
+    for (let row = 0; row < h; row++) {
+      let dstOff = ((y + row) * fbW + x) * 4;
+      for (let col = 0; col < w; col++) {
+        let pixel = 0;
+        if (pf.bigEndian) {
+          for (let i = 0; i < bytesPerPixel; i++) {
+            pixel = (pixel << 8) | raw[srcOff + i]!;
+          }
+        } else {
+          for (let i = 0; i < bytesPerPixel; i++) {
+            pixel |= raw[srcOff + i]! << (8 * i);
+          }
+        }
+
+        const rVal = (pixel >> pf.redShift) & pf.redMax;
+        const gVal = (pixel >> pf.greenShift) & pf.greenMax;
+        const bVal = (pixel >> pf.blueShift) & pf.blueMax;
+        dst[dstOff + 0] = rMul === 1 ? rVal : Math.round(rVal * rMul);
+        dst[dstOff + 1] = gMul === 1 ? gVal : Math.round(gVal * gMul);
+        dst[dstOff + 2] = bMul === 1 ? bVal : Math.round(bVal * bMul);
+        dst[dstOff + 3] = 255;
+
+        srcOff += bytesPerPixel;
+        dstOff += 4;
+      }
+    }
+  }
+
+  private blitRaw32leBgrx(
     x: number,
     y: number,
     w: number,
@@ -276,6 +424,34 @@ export class RfbClient {
         const g = raw[srcOff + 1]!;
         const r = raw[srcOff + 2]!;
         // raw[srcOff + 3] is unused (X)
+        dst[dstOff + 0] = r;
+        dst[dstOff + 1] = g;
+        dst[dstOff + 2] = b;
+        dst[dstOff + 3] = 255;
+        srcOff += 4;
+        dstOff += 4;
+      }
+    }
+  }
+
+  private blitRaw32leRgbx(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    raw: Uint8Array,
+  ) {
+    if (!this.imageData) return;
+    const dst = this.imageData.data;
+    const fbW = this.fbWidth;
+
+    let srcOff = 0;
+    for (let row = 0; row < h; row++) {
+      let dstOff = ((y + row) * fbW + x) * 4;
+      for (let col = 0; col < w; col++) {
+        const r = raw[srcOff + 0]!;
+        const g = raw[srcOff + 1]!;
+        const b = raw[srcOff + 2]!;
         dst[dstOff + 0] = r;
         dst[dstOff + 1] = g;
         dst[dstOff + 2] = b;
@@ -546,7 +722,7 @@ export class RfbClient {
   }
 
   private sendPreferredPixelFormat() {
-    this.sendSetPixelFormat({
+    const pf: PixelFormat = {
       bitsPerPixel: 32,
       depth: 24,
       bigEndian: 0,
@@ -557,7 +733,9 @@ export class RfbClient {
       redShift: 16,
       greenShift: 8,
       blueShift: 0,
-    });
+    };
+    this.pf = pf;
+    this.sendSetPixelFormat(pf);
   }
 
   private sendU8(v: number) {
