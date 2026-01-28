@@ -2,6 +2,11 @@
   import { onMount, onDestroy } from "svelte";
   import { RfbClient, type RfbStatus } from "$lib/rfb";
 
+  type MetricsSnapshot = {
+    visitors: number;
+    run_cmds: number;
+  };
+
   let canvasEl: HTMLCanvasElement | null = null;
   let status: RfbStatus = { state: "idle" };
   let statusText = "Idle";
@@ -12,6 +17,25 @@
   let sessionId: string | null = null;
   let pollTimer: number | null = null;
   let pendingLocal: RTCIceCandidateInit[] = [];
+  let metricsSource: EventSource | null = null;
+
+  let metrics: MetricsSnapshot | null = null;
+  let metricsError: string | null = null;
+
+  const formatOrdinal = (value: number) => {
+    const mod100 = value % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
+    switch (value % 10) {
+      case 1:
+        return `${value}st`;
+      case 2:
+        return `${value}nd`;
+      case 3:
+        return `${value}rd`;
+      default:
+        return `${value}th`;
+    }
+  };
 
   const statusLabel = (s: RfbStatus) => {
     switch (s.state) {
@@ -80,6 +104,24 @@
     return (await res.json()) as T;
   }
 
+  async function trackVisit() {
+    try {
+      metrics = await postJson<MetricsSnapshot>("/api/metrics/visit", {});
+      metricsError = null;
+    } catch (err) {
+      metricsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function trackRunCmd() {
+    try {
+      metrics = await postJson<MetricsSnapshot>("/api/metrics/run-cmd", {});
+      metricsError = null;
+    } catch (err) {
+      metricsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function toTrickle(c: RTCIceCandidateInit) {
     return {
       candidate: c.candidate ?? "",
@@ -127,7 +169,12 @@
 
     dc.onopen = () => {
       if (!dc || !canvasEl) return;
-      rfb = new RfbClient({ dc, canvas: canvasEl, statusCb: setStatus });
+      rfb = new RfbClient({
+        dc,
+        canvas: canvasEl,
+        statusCb: setStatus,
+        onCommand: () => void trackRunCmd(),
+      });
       void rfb.start().catch((err) => {
         setStatus({ state: "error", error: err instanceof Error ? err.message : String(err) });
       });
@@ -178,10 +225,27 @@
     void connect().catch((e) => {
       setStatus({ state: "error", error: e instanceof Error ? e.message : String(e) });
     });
+    void trackVisit();
+    metricsSource = new EventSource("/api/metrics/stream");
+    metricsSource.onopen = () => {
+      metricsError = null;
+    };
+    metricsSource.onmessage = (event) => {
+      try {
+        metrics = JSON.parse(event.data) as MetricsSnapshot;
+        metricsError = null;
+      } catch (err) {
+        metricsError = err instanceof Error ? err.message : String(err);
+      }
+    };
+    metricsSource.onerror = () => {
+      metricsError = "metrics stream error";
+    };
   });
 
   onDestroy(() => {
     if (pollTimer) window.clearInterval(pollTimer);
+    metricsSource?.close();
     rfb?.detachInput();
     try {
       dc?.close();
@@ -206,27 +270,47 @@
 </svelte:head>
 
 <div class="min-h-screen p-8 bg-black text-crt-green font-retro flex flex-col">
-  <header class="flex items-center justify-end gap-4 pb-8">
-    <a
-      href="https://github.com/andrewhinh/web-os"
-      class="inline-flex size-10 items-center justify-center rounded-full border border-crt-green/40 opacity-80 transition hover:border-crt-green hover:opacity-100 hover:bg-crt-green/10"
-      target="_blank"
-      rel="noreferrer"
-      aria-label="GitHub repository"
-    >
-      <span class="sr-only">GitHub</span>
-      <svg class="size-10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.11.8-.25.8-.56 0-.27-.01-.99-.02-1.94-3.2.7-3.88-1.52-3.88-1.52-.53-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.05 1.77 2.74 1.26 3.41.96.11-.76.41-1.25.74-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.25.45-2.29 1.2-3.09-.12-.29-.52-1.44.12-3 0 0 .98-.31 3.2 1.2a11.2 11.2 0 0 1 5.82 0c2.22-1.51 3.2-1.2 3.2-1.2.64 1.56.24 2.71.12 3 .75.8 1.2 1.84 1.2 3.09 0 4.41-2.68 5.38-5.24 5.67.42.36.8 1.05.8 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.68.81.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
-      </svg>
-    </a>
-    <a
-      href="https://ajhinh.com"
-      class="text-xl font-semibold underline underline-offset-6 opacity-70 transition hover:opacity-100"
-      target="_blank"
-      rel="noreferrer"
-    >
-      Andrew Hinh
-    </a>
+  <header class="flex items-center justify-between gap-4 pb-8">
+    <div class="flex flex-col gap-1 leading-none">
+      <div class="text-xl">
+        Hi visitor
+        <span class="underline underline-offset-4">
+          {metrics ? metrics.visitors : "—"}
+        </span>!
+      </div>
+      <div class="text-xl">
+        Run the
+        <span class="underline underline-offset-4">
+          {metrics ? formatOrdinal(metrics.run_cmds) : "—"}
+        </span>
+        command!
+      </div>
+      {#if metricsError}
+        <span class="text-[10px] uppercase tracking-wide opacity-50">metrics offline</span>
+      {/if}
+    </div>
+    <div class="flex items-center gap-4">
+      <a
+        href="https://github.com/andrewhinh/web-os"
+        class="inline-flex size-10 items-center justify-center rounded-full border border-crt-green/40 opacity-80 transition hover:border-crt-green hover:opacity-100 hover:bg-crt-green/10"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="GitHub repository"
+      >
+        <span class="sr-only">GitHub</span>
+        <svg class="size-10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.11.8-.25.8-.56 0-.27-.01-.99-.02-1.94-3.2.7-3.88-1.52-3.88-1.52-.53-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.05 1.77 2.74 1.26 3.41.96.11-.76.41-1.25.74-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.25.45-2.29 1.2-3.09-.12-.29-.52-1.44.12-3 0 0 .98-.31 3.2 1.2a11.2 11.2 0 0 1 5.82 0c2.22-1.51 3.2-1.2 3.2-1.2.64 1.56.24 2.71.12 3 .75.8 1.2 1.84 1.2 3.09 0 4.41-2.68 5.38-5.24 5.67.42.36.8 1.05.8 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.68.81.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
+        </svg>
+      </a>
+      <a
+        href="https://ajhinh.com"
+        class="text-xl font-semibold underline underline-offset-6 opacity-70 transition hover:opacity-100"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Andrew Hinh
+      </a>
+    </div>
   </header>
 
   <main class="flex flex-1 flex-col items-center justify-center">

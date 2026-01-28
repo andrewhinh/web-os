@@ -99,6 +99,7 @@ export class RfbClient {
   private q = new ByteQueue();
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
+  private onCommand?: () => void;
 
   private fbWidth = 0;
   private fbHeight = 0;
@@ -112,11 +113,13 @@ export class RfbClient {
   private zlibStream: Unzlib | null = null;
   private zlibTarget: Uint8Array | null = null;
   private zlibTargetOff = 0;
+  private pendingCommandChars = 0;
 
   constructor(opts: {
     dc: RTCDataChannel;
     canvas: HTMLCanvasElement;
     statusCb: (s: RfbStatus) => void;
+    onCommand?: () => void;
   }) {
     this.dc = opts.dc;
     this.canvas = opts.canvas;
@@ -124,6 +127,7 @@ export class RfbClient {
     if (!ctx) throw new Error("canvas 2d ctx unavailable");
     this.ctx = ctx;
     this.statusCb = opts.statusCb;
+    this.onCommand = opts.onCommand;
 
     this.dc.binaryType = "arraybuffer";
     this.dc.addEventListener("message", (ev) => {
@@ -508,6 +512,18 @@ export class RfbClient {
 
   private onKeyDown = (ev: KeyboardEvent) => {
     if (ev.repeat) return;
+    if (ev.key === "Enter") {
+      if (this.pendingCommandChars > 0) {
+        this.onCommand?.();
+      }
+      this.pendingCommandChars = 0;
+    } else if (ev.key === "Backspace") {
+      this.pendingCommandChars = Math.max(0, this.pendingCommandChars - 1);
+    } else if (ev.key === "Escape") {
+      this.pendingCommandChars = 0;
+    } else if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey) {
+      this.pendingCommandChars += 1;
+    }
     const keysym = this.keysymFromEvent(ev);
     if (keysym == null) return;
     ev.preventDefault();

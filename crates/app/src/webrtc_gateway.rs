@@ -15,7 +15,7 @@ use tokio::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{Mutex, Notify, mpsc},
+    sync::{Mutex, Notify, broadcast, mpsc},
 };
 use uuid::Uuid;
 use webrtc::{
@@ -32,12 +32,42 @@ use webrtc::{
     },
 };
 
+use crate::metrics::{Metrics, MetricsSnapshot};
+
 const DEFAULT_STUN_SERVER: &str = "stun:stun.l.google.com:19302";
 const DEFAULT_SESSION_OWNER: &str = "local";
+const METRICS_BUFFER: usize = 64;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AppState {
     sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
+    metrics: Metrics,
+    metrics_tx: broadcast::Sender<MetricsSnapshot>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        let (metrics_tx, _rx) = broadcast::channel(METRICS_BUFFER);
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            metrics: Metrics::from_env(),
+            metrics_tx,
+        }
+    }
+}
+
+impl AppState {
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+
+    pub fn metrics_subscribe(&self) -> broadcast::Receiver<MetricsSnapshot> {
+        self.metrics_tx.subscribe()
+    }
+
+    pub fn publish_metrics(&self, snapshot: MetricsSnapshot) {
+        let _ = self.metrics_tx.send(snapshot);
+    }
 }
 
 struct Session {
