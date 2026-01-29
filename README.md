@@ -22,7 +22,6 @@ fly auth login
 ### Commands
 
 ```bash
-cargo build --target riscv64gc-unknown-none-elf  # build kernel
 cargo run --target riscv64gc-unknown-none-elf    # run kernel
 mprocs                                           # run server and frontend
 
@@ -34,6 +33,9 @@ docker run --rm -p 8080:8080 web-os              # test kernel run
 fly launch
 fly ips allocate-v4                              # allocate a dedicated IPv4 for WebRTC
 fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>
+fly redis create
+fly secrets set UPSTASH_REDIS_REST_URL=<url> UPSTASH_REDIS_REST_TOKEN=<token>
+fly deploy
 ```
 
 ## Roadmap
@@ -82,6 +84,7 @@ fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>
 
 - [x] stream kernel video to browser via VNC and WebRTC
 - [ ] multiplex WebRTC connections for each machine instance
+- [x] add live metrics
 
 ## Credit
 

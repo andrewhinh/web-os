@@ -1,16 +1,26 @@
-use std::{path::PathBuf, process::Stdio};
+use std::{convert::Infallible, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
 
 use axum::{
-    Router,
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get_service, post},
 };
+use futures::stream::{self, Stream, StreamExt};
 use hyper::server::conn::http1;
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+use serde_json::to_string;
 use tokio::{net::TcpListener, process::Command};
 use tower_http::services::{ServeDir, ServeFile};
 
+mod metrics;
 mod webrtc_gateway;
 
+use metrics::MetricsSnapshot;
 use webrtc_gateway::{AppState, candidate_handler, config_handler, offer_handler};
 
 const DEFAULT_PORT: u16 = 8080;
@@ -48,6 +58,7 @@ const QEMU_ARGS: &[&str] = &[
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    init_crypto_provider();
     spawn_qemu().await?;
 
     let static_dir = resolve_static_dir()?;
@@ -58,6 +69,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/webrtc/config", axum::routing::get(config_handler))
         .route("/api/webrtc/offer", post(offer_handler))
         .route("/api/webrtc/candidate", post(candidate_handler))
+        .route("/api/metrics", axum::routing::get(metrics_get_handler))
+        .route(
+            "/api/metrics/stream",
+            axum::routing::get(metrics_stream_handler),
+        )
+        .route("/api/metrics/visit", post(metrics_visit_handler))
+        .route("/api/metrics/run-cmd", post(metrics_run_cmd_handler))
         .fallback_service(get_service(
             ServeDir::new(&static_dir)
                 .append_index_html_on_directories(true)
@@ -93,6 +111,82 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+}
+
+fn init_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+async fn metrics_get_handler(
+    State(state): State<AppState>,
+) -> Result<Json<MetricsSnapshot>, (StatusCode, String)> {
+    state
+        .metrics()
+        .snapshot()
+        .await
+        .map(Json)
+        .map_err(internal_error)
+}
+
+async fn metrics_visit_handler(
+    State(state): State<AppState>,
+) -> Result<Json<MetricsSnapshot>, (StatusCode, String)> {
+    let snapshot = state
+        .metrics()
+        .incr_visitors()
+        .await
+        .map_err(internal_error)?;
+    state.publish_metrics(snapshot);
+    Ok(Json(snapshot))
+}
+
+async fn metrics_run_cmd_handler(
+    State(state): State<AppState>,
+) -> Result<Json<MetricsSnapshot>, (StatusCode, String)> {
+    let snapshot = state
+        .metrics()
+        .incr_run_cmds()
+        .await
+        .map_err(internal_error)?;
+    state.publish_metrics(snapshot);
+    Ok(Json(snapshot))
+}
+
+async fn metrics_stream_handler(State(state): State<AppState>) -> Response {
+    let snapshot = match state.metrics().snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(err) => return internal_error(err).into_response(),
+    };
+    let initial = Event::default().data(to_string(&snapshot).unwrap_or_else(|_| "{}".to_string()));
+    let rx = state.metrics_subscribe();
+
+    let updates = stream::unfold(rx, |mut rx| async {
+        loop {
+            match rx.recv().await {
+                Ok(snapshot) => {
+                    let data = to_string(&snapshot).unwrap_or_else(|_| "{}".to_string());
+                    let event = Event::default().data(data);
+                    return Some((Ok(event), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    let stream = stream::once(async move { Ok::<Event, Infallible>(initial) }).chain(updates);
+    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(stream);
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+fn internal_error<E: std::fmt::Display>(err: E) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
 fn resolve_static_dir() -> anyhow::Result<PathBuf> {
