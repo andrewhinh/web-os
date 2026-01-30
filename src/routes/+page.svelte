@@ -15,9 +15,11 @@
   let dc: RTCDataChannel | null = null;
   let rfb: RfbClient | null = null;
   let sessionId: string | null = null;
-  let pollTimer: number | null = null;
+  let iceSource: EventSource | null = null;
   let pendingLocal: RTCIceCandidateInit[] = [];
   let metricsSource: EventSource | null = null;
+  let reconnecting = false;
+  let isDestroyed = false;
 
   let metrics: MetricsSnapshot | null = null;
   let metricsError: string | null = null;
@@ -131,20 +133,12 @@
     };
   }
 
-  async function syncCandidates(candidate: RTCIceCandidateInit | null) {
+  async function syncCandidates(candidate: RTCIceCandidateInit) {
     if (!pc || !sessionId) return;
-    const res = await postJson<{ candidates: Array<{ candidate: string; sdp_mid: string | null; sdp_mline_index: number | null; username_fragment: string | null }> }>(
+    await postJson<{ candidates: Array<{ candidate: string; sdp_mid: string | null; sdp_mline_index: number | null; username_fragment: string | null }> }>(
       "/api/webrtc/candidate",
       { session_id: sessionId, candidate: candidate ? toTrickle(candidate) : null },
     );
-    for (const c of res.candidates) {
-      await pc.addIceCandidate({
-        candidate: c.candidate,
-        sdpMid: c.sdp_mid ?? undefined,
-        sdpMLineIndex: c.sdp_mline_index ?? undefined,
-        usernameFragment: c.username_fragment ?? undefined,
-      });
-    }
   }
 
   function initPeerConnection(iceServers: Array<{ urls: string[]; username?: string | null; credential?: string | null }>) {
@@ -166,6 +160,18 @@
       }
       void syncCandidates(init);
     };
+    pc.oniceconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+        void scheduleReconnect(`ice ${pc.iceConnectionState}`);
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        void scheduleReconnect(`pc ${pc.connectionState}`);
+      }
+    };
 
     dc.onopen = () => {
       if (!dc || !canvasEl) return;
@@ -181,11 +187,86 @@
     };
 
     dc.onclose = () => setStatus({ state: "closed" });
+    dc.onerror = () => {
+      setStatus({ state: "error", error: "data channel error" });
+      void scheduleReconnect("dc error");
+    };
+  }
+
+  function cleanupConnection() {
+    iceSource?.close();
+    iceSource = null;
+    pendingLocal = [];
+    sessionId = null;
+    rfb?.detachInput();
+    rfb = null;
+    try {
+      dc?.close();
+    } catch {
+      // ignore
+    }
+    dc = null;
+    try {
+      pc?.close();
+    } catch {
+      // ignore
+    }
+    pc = null;
+  }
+
+  async function scheduleReconnect(reason: string) {
+    void reason;
+    if (reconnecting || isDestroyed) return;
+    reconnecting = true;
+    setStatus({ state: "connecting" });
+    cleanupConnection();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      await connect();
+    } catch (err) {
+      setStatus({ state: "error", error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      reconnecting = false;
+    }
+  }
+
+  function startCandidateStream() {
+    if (!sessionId) return;
+    const qs = new URLSearchParams({ session_id: sessionId, t: String(Date.now()) });
+    iceSource = new EventSource(`/api/webrtc/stream?${qs.toString()}`);
+    iceSource.onmessage = (event) => {
+      if (!pc) return;
+      try {
+        const c = JSON.parse(event.data) as {
+          candidate: string;
+          sdp_mid?: string | null;
+          sdp_mline_index?: number | null;
+          username_fragment?: string | null;
+        };
+        void pc.addIceCandidate({
+          candidate: c.candidate,
+          sdpMid: c.sdp_mid ?? undefined,
+          sdpMLineIndex: c.sdp_mline_index ?? undefined,
+          usernameFragment: c.username_fragment ?? undefined,
+        });
+      } catch {
+        // ignore parse errors
+      }
+    };
+    iceSource.onerror = () => {
+      if (!pc) return;
+      if (pc.iceConnectionState === "failed" || pc.connectionState === "failed") {
+        void scheduleReconnect("sse error");
+      }
+    };
   }
 
   async function startSession() {
     if (!pc) throw new Error("peer connection missing");
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({
+      offerToReceiveAudio: false,
+      offerToReceiveVideo: false,
+    });
     await pc.setLocalDescription(offer);
 
     const answer = await postJson<{ session_id: string; sdp: string; type: string }>(
@@ -199,14 +280,12 @@
       sdp: answer.sdp,
     });
 
+    startCandidateStream();
+
     for (const c of pendingLocal) {
       await syncCandidates(c);
     }
     pendingLocal = [];
-
-    pollTimer = window.setInterval(() => {
-      void syncCandidates(null);
-    }, 250);
   }
 
   async function connect() {
@@ -244,8 +323,9 @@
   });
 
   onDestroy(() => {
-    if (pollTimer) window.clearInterval(pollTimer);
+    isDestroyed = true;
     metricsSource?.close();
+    iceSource?.close();
     rfb?.detachInput();
     try {
       dc?.close();
