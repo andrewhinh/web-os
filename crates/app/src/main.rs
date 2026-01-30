@@ -14,7 +14,7 @@ use axum::{
 };
 use futures::stream::{self, Stream, StreamExt};
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto,
     service::TowerToHyperService,
 };
@@ -115,7 +115,13 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => TcpListener::bind(format!("0.0.0.0:{port}")).await?,
     };
 
-    let conn_builder = auto::Builder::new(TokioExecutor::new());
+    let mut conn_builder = auto::Builder::new(TokioExecutor::new());
+    conn_builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(None)
+        .keep_alive(true)
+        .half_close(true);
 
     loop {
         let (stream, _peer) = listener.accept().await?;
