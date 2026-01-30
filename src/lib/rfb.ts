@@ -114,6 +114,9 @@ export class RfbClient {
   private zlibTarget: Uint8Array | null = null;
   private zlibTargetOff = 0;
   private pendingCommandChars = 0;
+  private sendQueue: Array<Uint8Array<ArrayBuffer>> = [];
+  private readonly bufferedLow = 256 * 1024;
+  private readonly bufferedHigh = 1024 * 1024;
 
   constructor(opts: {
     dc: RTCDataChannel;
@@ -130,6 +133,7 @@ export class RfbClient {
     this.onCommand = opts.onCommand;
 
     this.dc.binaryType = "arraybuffer";
+    this.dc.bufferedAmountLowThreshold = this.bufferedLow;
     this.dc.addEventListener("message", (ev) => {
       if (typeof ev.data === "string") return;
       if (ev.data instanceof ArrayBuffer) {
@@ -142,8 +146,12 @@ export class RfbClient {
           .then((ab) => this.q.push(new Uint8Array(ab)));
       }
     });
+    this.dc.addEventListener("bufferedamountlow", () => {
+      this.flushSendQueue();
+    });
     this.dc.addEventListener("close", () => {
       this.q.close();
+      this.sendQueue = [];
       this.statusCb({ state: "closed" });
     });
   }
@@ -764,7 +772,28 @@ export class RfbClient {
     // We always want to send an ArrayBuffer-backed view.
     const copy = new Uint8Array(buf.byteLength);
     copy.set(buf);
-    this.dc.send(copy);
+    const out = copy as Uint8Array<ArrayBuffer>;
+    if (
+      this.sendQueue.length > 0 ||
+      this.dc.bufferedAmount > this.bufferedHigh
+    ) {
+      this.sendQueue.push(out);
+      return;
+    }
+    this.dc.send(out);
+    this.flushSendQueue();
+  }
+
+  private flushSendQueue() {
+    if (this.dc.readyState !== "open") return;
+    while (
+      this.sendQueue.length > 0 &&
+      this.dc.bufferedAmount <= this.bufferedLow
+    ) {
+      const next = this.sendQueue.shift();
+      if (!next) break;
+      this.dc.send(next);
+    }
   }
 
   private async readU8() {
