@@ -24,6 +24,22 @@
 
   let metrics: MetricsSnapshot | null = null;
   let metricsError: string | null = null;
+  let reconnectAttempts = 0;
+  let metricsReconnectAttempts = 0;
+  let metricsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const RETRYABLE_STATUSES = new Set([409, 425, 429, 500, 502, 503, 504]);
+  const MAX_RETRIES = 3;
+  const RETRY_BASE_MS = 150;
+  const RETRY_MAX_MS = 2000;
+  const RECONNECT_BASE_MS = 300;
+  const RECONNECT_MAX_MS = 8000;
+  const STREAM_RETRY_BASE_MS = 500;
+  const STREAM_RETRY_MAX_MS = 10000;
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const backoffDelay = (attempt: number, base: number, max: number) =>
+    Math.min(max, base * 2 ** attempt) + Math.floor(Math.random() * 100);
 
   const formatOrdinal = (value: number) => {
     const mod100 = value % 100;
@@ -61,50 +77,70 @@
   };
 
   async function postJson<T>(path: string, body: unknown, attempt = 0): Promise<T> {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if ((res.status === 409 || res.status === 503) && attempt < 1) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      return postJson<T>(path, body, attempt + 1);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+        await sleep(backoffDelay(attempt, RETRY_BASE_MS, RETRY_MAX_MS));
+        return postJson<T>(path, body, attempt + 1);
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+      }
+      return (await res.json()) as T;
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        await sleep(backoffDelay(attempt, RETRY_BASE_MS, RETRY_MAX_MS));
+        return postJson<T>(path, body, attempt + 1);
+      }
+      throw err;
     }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
-    }
-    return (await res.json()) as T;
   }
 
-  async function getJson<T>(path: string): Promise<T> {
-    const sep = path.includes("?") ? "&" : "?";
-    const url = `${path}${sep}t=${Date.now()}`;
-    const res = await fetch(url, {
-      cache: "no-store",
-      headers: { accept: "application/json" },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
-    }
-
-    const ct = res.headers.get("content-type") ?? "";
-    if (!ct.includes("application/json")) {
-      const text = await res.text().catch(() => "");
-      // In dev, if the Vite proxy isn't active, /api will fall back to index.html.
-      // Retry directly against the backend for a better UX.
-      if (location.hostname === "localhost" && location.port === "5173") {
-        const direct = await fetch(`http://localhost:8080${url}`, {
-          cache: "no-store",
-          headers: { accept: "application/json" },
-        });
-        if (direct.ok) return (await direct.json()) as T;
+  async function getJson<T>(path: string, attempt = 0): Promise<T> {
+    try {
+      const sep = path.includes("?") ? "&" : "?";
+      const url = `${path}${sep}t=${Date.now()}`;
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+        await sleep(backoffDelay(attempt, RETRY_BASE_MS, RETRY_MAX_MS));
+        return getJson<T>(path, attempt + 1);
       }
-      throw new Error(`Expected JSON from ${res.url}, got ${ct}: ${text.slice(0, 80)}`);
-    }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+      }
 
-    return (await res.json()) as T;
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        const text = await res.text().catch(() => "");
+        // In dev, if the Vite proxy isn't active, /api will fall back to index.html.
+        // Retry directly against the backend for a better UX.
+        if (location.hostname === "localhost" && location.port === "5173") {
+          const direct = await fetch(`http://localhost:8080${url}`, {
+            cache: "no-store",
+            headers: { accept: "application/json" },
+          });
+          if (direct.ok) return (await direct.json()) as T;
+        }
+        throw new Error(`Expected JSON from ${res.url}, got ${ct}: ${text.slice(0, 80)}`);
+      }
+
+      return (await res.json()) as T;
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        await sleep(backoffDelay(attempt, RETRY_BASE_MS, RETRY_MAX_MS));
+        return getJson<T>(path, attempt + 1);
+      }
+      throw err;
+    }
   }
 
   async function trackVisit() {
@@ -222,9 +258,12 @@
     reconnecting = true;
     setStatus({ state: "connecting" });
     cleanupConnection();
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitForOnline();
+    await sleep(backoffDelay(reconnectAttempts, RECONNECT_BASE_MS, RECONNECT_MAX_MS));
+    reconnectAttempts = Math.min(reconnectAttempts + 1, 6);
     try {
       await connect();
+      reconnectAttempts = 0;
     } catch (err) {
       setStatus({ state: "error", error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -293,6 +332,7 @@
   async function connect() {
     if (!canvasEl) throw new Error("canvas missing");
     setStatus({ state: "connecting" });
+    await waitForOnline();
 
     const webrtcCfg = await getJson<{
       ice_servers: Array<{ urls: string[]; username?: string | null; credential?: string | null }>;
@@ -307,25 +347,17 @@
       setStatus({ state: "error", error: e instanceof Error ? e.message : String(e) });
     });
     void trackVisit();
-    metricsSource = new EventSource("/api/metrics/stream");
-    metricsSource.onopen = () => {
-      metricsError = null;
-    };
-    metricsSource.onmessage = (event) => {
-      try {
-        metrics = JSON.parse(event.data) as MetricsSnapshot;
-        metricsError = null;
-      } catch (err) {
-        metricsError = err instanceof Error ? err.message : String(err);
-      }
-    };
-    metricsSource.onerror = () => {
-      metricsError = "metrics stream error";
-    };
+    startMetricsStream();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
   });
 
   onDestroy(() => {
     isDestroyed = true;
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+    if (metricsRetryTimer) {
+      clearTimeout(metricsRetryTimer);
+      metricsRetryTimer = null;
+    }
     metricsSource?.close();
     iceSource?.close();
     rfb?.detachInput();
@@ -340,14 +372,73 @@
       // ignore
     }
   });
+
+  async function waitForOnline() {
+    if (navigator.onLine) return;
+    await new Promise<void>((resolve) => {
+      const handler = () => {
+        window.removeEventListener("online", handler);
+        resolve();
+      };
+      window.addEventListener("online", handler, { once: true });
+    });
+  }
+
+  function startMetricsStream() {
+    if (metricsSource || isDestroyed || document.visibilityState === "hidden") return;
+    metricsSource = new EventSource("/api/metrics/stream");
+    metricsSource.onopen = () => {
+      metricsError = null;
+      metricsReconnectAttempts = 0;
+    };
+    metricsSource.onmessage = (event) => {
+      try {
+        metrics = JSON.parse(event.data) as MetricsSnapshot;
+        metricsError = null;
+      } catch (err) {
+        metricsError = err instanceof Error ? err.message : String(err);
+      }
+    };
+    metricsSource.onerror = () => {
+      metricsError = "metrics stream error";
+      scheduleMetricsReconnect();
+    };
+  }
+
+  function stopMetricsStream() {
+    metricsSource?.close();
+    metricsSource = null;
+  }
+
+  function scheduleMetricsReconnect() {
+    if (metricsRetryTimer || isDestroyed) return;
+    stopMetricsStream();
+    const delay = backoffDelay(metricsReconnectAttempts, STREAM_RETRY_BASE_MS, STREAM_RETRY_MAX_MS);
+    metricsReconnectAttempts = Math.min(metricsReconnectAttempts + 1, 6);
+    metricsRetryTimer = setTimeout(() => {
+      metricsRetryTimer = null;
+      startMetricsStream();
+    }, delay);
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      stopMetricsStream();
+      return;
+    }
+    startMetricsStream();
+  }
 </script>
 
 <svelte:head>
   <title>Web OS</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+  <link
+    rel="preload"
+    href="https://fonts.googleapis.com/css2?family=VT323&display=swap"
+    as="style"
+  />
   <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
 </svelte:head>
 
