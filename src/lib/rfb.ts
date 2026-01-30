@@ -99,6 +99,7 @@ export class RfbClient {
   private q = new ByteQueue();
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
+  private keyboardInput: HTMLInputElement | null;
   private onCommand?: () => void;
 
   private fbWidth = 0;
@@ -110,6 +111,7 @@ export class RfbClient {
   private plY = 0;
   private lastAbsX = 0;
   private lastAbsY = 0;
+  private touchId: number | null = null;
   private zlibStream: Unzlib | null = null;
   private zlibTarget: Uint8Array | null = null;
   private zlibTargetOff = 0;
@@ -121,11 +123,13 @@ export class RfbClient {
   constructor(opts: {
     dc: RTCDataChannel;
     canvas: HTMLCanvasElement;
+    keyboardInput?: HTMLInputElement | null;
     statusCb: (s: RfbStatus) => void;
     onCommand?: () => void;
   }) {
     this.dc = opts.dc;
     this.canvas = opts.canvas;
+    this.keyboardInput = opts.keyboardInput ?? null;
     const ctx = this.canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("canvas 2d ctx unavailable");
     this.ctx = ctx;
@@ -172,6 +176,18 @@ export class RfbClient {
     this.canvas.addEventListener("click", this.onCanvasClick, {
       passive: false,
     });
+    this.canvas.addEventListener("touchstart", this.onTouchStart, {
+      passive: false,
+    });
+    this.canvas.addEventListener("touchmove", this.onTouchMove, {
+      passive: false,
+    });
+    this.canvas.addEventListener("touchend", this.onTouchEnd, {
+      passive: false,
+    });
+    this.canvas.addEventListener("touchcancel", this.onTouchEnd, {
+      passive: false,
+    });
     document.addEventListener("pointerlockchange", this.onPointerLockChange, {
       passive: true,
     });
@@ -185,6 +201,10 @@ export class RfbClient {
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     this.canvas.removeEventListener("mouseup", this.onMouseUp);
     this.canvas.removeEventListener("click", this.onCanvasClick);
+    this.canvas.removeEventListener("touchstart", this.onTouchStart);
+    this.canvas.removeEventListener("touchmove", this.onTouchMove);
+    this.canvas.removeEventListener("touchend", this.onTouchEnd);
+    this.canvas.removeEventListener("touchcancel", this.onTouchEnd);
     document.removeEventListener("pointerlockchange", this.onPointerLockChange);
   }
 
@@ -519,6 +539,7 @@ export class RfbClient {
   }
 
   private onKeyDown = (ev: KeyboardEvent) => {
+    if (ev.defaultPrevented) return;
     if (ev.repeat) return;
     if (ev.key === "Enter") {
       if (this.pendingCommandChars > 0) {
@@ -539,6 +560,7 @@ export class RfbClient {
   };
 
   private onKeyUp = (ev: KeyboardEvent) => {
+    if (ev.defaultPrevented) return;
     const keysym = this.keysymFromEvent(ev);
     if (keysym == null) return;
     ev.preventDefault();
@@ -587,6 +609,31 @@ export class RfbClient {
     return { x, y };
   }
 
+  private touchPos(touch: Touch): { x: number; y: number } {
+    const r = this.contentRect();
+    const sx = this.fbWidth / r.width;
+    const sy = this.fbHeight / r.height;
+    const x = Math.max(
+      0,
+      Math.min(this.fbWidth - 1, Math.floor((touch.clientX - r.left) * sx)),
+    );
+    const y = Math.max(
+      0,
+      Math.min(this.fbHeight - 1, Math.floor((touch.clientY - r.top) * sy)),
+    );
+    return { x, y };
+  }
+
+  private touchById(list: TouchList, id: number | null): Touch | null {
+    if (list.length === 0) return null;
+    if (id == null) return list.item(0);
+    for (let i = 0; i < list.length; i++) {
+      const t = list.item(i);
+      if (t && t.identifier === id) return t;
+    }
+    return null;
+  }
+
   private contentRect(): {
     left: number;
     top: number;
@@ -616,7 +663,12 @@ export class RfbClient {
     return { left, top, width: w, height: h };
   }
 
+  private focusKeyboard() {
+    this.keyboardInput?.focus();
+  }
+
   private onCanvasClick = (ev: MouseEvent) => {
+    this.focusKeyboard();
     // Pointer Lock requires a user gesture; click is simplest cross-browser way.
     if (document.pointerLockElement === this.canvas) return;
     // Don't steal focus if not interacting.
@@ -631,6 +683,48 @@ export class RfbClient {
       this.plX = this.lastAbsX || Math.floor(this.fbWidth / 2);
       this.plY = this.lastAbsY || Math.floor(this.fbHeight / 2);
     }
+  };
+
+  private onTouchStart = (ev: TouchEvent) => {
+    if (ev.touches.length === 0 && ev.changedTouches.length === 0) return;
+    ev.preventDefault();
+    this.focusKeyboard();
+    if (this.touchId == null) {
+      const first = ev.changedTouches[0] ?? ev.touches[0];
+      if (!first) return;
+      this.touchId = first.identifier;
+    }
+    const touch =
+      this.touchById(ev.touches, this.touchId) ??
+      this.touchById(ev.changedTouches, this.touchId);
+    if (!touch) return;
+    const p = this.touchPos(touch);
+    this.lastAbsX = p.x;
+    this.lastAbsY = p.y;
+    this.sendPointerEvent(1, p.x, p.y);
+  };
+
+  private onTouchMove = (ev: TouchEvent) => {
+    if (this.touchId == null) return;
+    const touch = this.touchById(ev.touches, this.touchId);
+    if (!touch) return;
+    ev.preventDefault();
+    const p = this.touchPos(touch);
+    this.lastAbsX = p.x;
+    this.lastAbsY = p.y;
+    this.sendPointerEvent(1, p.x, p.y);
+  };
+
+  private onTouchEnd = (ev: TouchEvent) => {
+    if (this.touchId == null) return;
+    const touch = this.touchById(ev.changedTouches, this.touchId);
+    if (!touch) return;
+    ev.preventDefault();
+    const p = this.touchPos(touch);
+    this.lastAbsX = p.x;
+    this.lastAbsY = p.y;
+    this.sendPointerEvent(0, p.x, p.y);
+    this.touchId = null;
   };
 
   private onMouseMove = (ev: MouseEvent) => {
