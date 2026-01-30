@@ -13,6 +13,10 @@ A Rust re-implementation of xv6 for RISC-V, available on the web.
 - [act](https://nektosact.com/installation/index.html)
 - [flyctl](https://fly.io/docs/flyctl/install/)
 
+Create an [Open Relay TURN server](https://www.metered.ca/tools/openrelay/)
+account [here](https://dashboard.metered.ca/login?tool=turnserver) for TURN
+server credentials.
+
 ```bash
 npm i
 prek install
@@ -33,6 +37,7 @@ docker run --rm -p 8080:8080 web-os              # test kernel run
 fly launch
 fly ips allocate-v4                              # allocate a dedicated IPv4 for WebRTC
 fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>
+fly secrets set TURN_USERNAME=<username> TURN_CREDENTIAL=<credential>
 fly redis create
 fly secrets set UPSTASH_REDIS_REST_URL=<url> UPSTASH_REDIS_REST_TOKEN=<token>
 fly deploy
