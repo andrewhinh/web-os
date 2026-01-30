@@ -5,6 +5,7 @@ use core::{
 
 use crate::{
     console::CONS,
+    framebuffer,
     memlayout::{VIRTIO3, VIRTIO4},
     spinlock::Mutex,
     virtio_gpu::GPU,
@@ -819,6 +820,34 @@ impl Mouse {
         g.flush_rect(flush_rect.0, flush_rect.1, flush_rect.2, flush_rect.3);
     }
 
+    fn erase_cursor(&mut self) {
+        if !self.cursor_drawn || self.cursor_w == 0 || self.cursor_h == 0 {
+            return;
+        }
+        let mut g = GPU.lock();
+        if !g.is_inited() {
+            return;
+        }
+        let Some((w, h, stride, _fmt)) = g.info() else {
+            return;
+        };
+        if w == 0 || h == 0 {
+            return;
+        }
+        let Some(fb) = g.fb_mut() else {
+            return;
+        };
+        for yy in 0..self.cursor_h {
+            for xx in 0..self.cursor_w {
+                let dst = (self.cursor_oy + yy) * stride + (self.cursor_ox + xx);
+                let src = yy * Self::CUR_W + xx;
+                fb[dst] = self.cursor_under[src];
+            }
+        }
+        g.flush_rect(self.cursor_ox, self.cursor_oy, self.cursor_w, self.cursor_h);
+        self.cursor_drawn = false;
+    }
+
     pub fn intr(&mut self) {
         if !self.inited {
             self.init();
@@ -854,11 +883,9 @@ impl Mouse {
                             moved = true;
                         }
                         rel::REL_WHEEL => {
-                            if delta > 0 {
-                                Kbd::inject_bytes(b"\x1b[A");
-                            } else if delta < 0 {
-                                Kbd::inject_bytes(b"\x1b[B");
-                            }
+                            self.erase_cursor();
+                            framebuffer::scrollback(delta);
+                            self.draw_cursor();
                         }
                         _ => {}
                     }

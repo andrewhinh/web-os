@@ -73,6 +73,9 @@ fn main() -> sys::Result<()> {
             Err(e) => return Err(e),
         }
     }
+    if !Path::new("/tmp").is_dir() {
+        let _ = fs::create_dir("/tmp");
+    }
 
     journal_recover();
 
