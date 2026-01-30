@@ -83,7 +83,6 @@ fly deploy
 ### App
 
 - [x] stream kernel video to browser via VNC and WebRTC
-- [ ] multiplex WebRTC connections for each machine instance
 - [x] add live metrics
 
 ## Credit
