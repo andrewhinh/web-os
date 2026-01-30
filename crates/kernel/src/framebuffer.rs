@@ -18,6 +18,8 @@ const CHAR_H: usize = 8 * SCALE;
 // - 1 byte per row, MSB is leftmost pixel
 // - missing chars render as '?'
 const FONT8X8: [[u8; 8]; 128] = include!("../font8x8.in");
+const FONT8X8_EXT_LATIN: [[u8; 8]; 96] = include!("../font8x8_ext_latin.in");
+const FONT8X8_BOX: [[u8; 8]; 128] = include!("../font8x8_box.in");
 
 pub struct FbConsole {
     inited: bool,
@@ -40,6 +42,11 @@ pub struct FbConsole {
     csi: bool,
     csi_num: usize,
     csi_have_num: bool,
+
+    // UTF-8 decode state
+    utf8_codepoint: u32,
+    utf8_needed: u8,
+    utf8_min: u32,
 }
 
 impl Default for FbConsole {
@@ -113,6 +120,10 @@ impl FbConsole {
             csi: false,
             csi_num: 0,
             csi_have_num: false,
+
+            utf8_codepoint: 0,
+            utf8_needed: 0,
+            utf8_min: 0,
         }
     }
 
@@ -207,6 +218,7 @@ impl FbConsole {
         self.csi = false;
         self.csi_num = 0;
         self.csi_have_num = false;
+        self.reset_utf8_state();
     }
 
     fn scroll_locked(&mut self, g: &mut Gpu, rows: usize) {
@@ -296,13 +308,21 @@ impl FbConsole {
         self.mark_dirty_rect(x0, y0, x1 - x0, y1 - y0);
     }
 
-    fn draw_char_at(&mut self, g: &mut Gpu, c: char, px: usize, py: usize) {
-        let idx = if (c as u32) < 128 {
-            c as usize
+    fn glyph_for_char(c: char) -> &'static [u8; 8] {
+        let cp = c as u32;
+        if cp < 0x80 {
+            &FONT8X8[cp as usize]
+        } else if (0x00A0..=0x00FF).contains(&cp) {
+            &FONT8X8_EXT_LATIN[(cp - 0x00A0) as usize]
+        } else if (0x2500..=0x257F).contains(&cp) {
+            &FONT8X8_BOX[(cp - 0x2500) as usize]
         } else {
-            b'?' as usize
-        };
-        let glyph = FONT8X8[idx];
+            &FONT8X8[b'?' as usize]
+        }
+    }
+
+    fn draw_char_at(&mut self, g: &mut Gpu, c: char, px: usize, py: usize) {
+        let glyph = Self::glyph_for_char(c);
 
         let fg = self.fmt.pack_rgba(0, 255, 64, 0xff);
         let bg = self.fmt.pack_rgba(0, 0, 0, 0xff);
@@ -340,6 +360,100 @@ impl FbConsole {
         }
 
         self.mark_dirty_rect(minx, miny, maxx - minx + 1, maxy - miny + 1);
+    }
+
+    fn reset_utf8_state(&mut self) {
+        self.utf8_codepoint = 0;
+        self.utf8_needed = 0;
+        self.utf8_min = 0;
+    }
+
+    fn render_char_locked(&mut self, g: &mut Gpu, ch: char) {
+        if self.x + CHAR_W + BORDER_PADDING >= self.width {
+            self.newline(g);
+        }
+        if self.y + CHAR_H + BORDER_PADDING >= self.height {
+            self.newline(g);
+        }
+        self.draw_char_at(g, ch, self.x, self.y);
+        self.x += CHAR_W + LETTER_SPACING;
+    }
+
+    fn handle_ascii_byte_locked(&mut self, g: &mut Gpu, byte: u8) {
+        if self.handle_ansi_locked(g, byte) {
+            return;
+        }
+        match byte {
+            b'\n' => self.newline(g),
+            b'\r' => self.x = BORDER_PADDING,
+            0x08 => self.cursor_left(),
+            0x7f => self.cursor_left(),
+            b'\t' => {
+                let tab_w = 4 * (CHAR_W + LETTER_SPACING);
+                let cur = self.x.saturating_sub(BORDER_PADDING);
+                let next = ((cur / tab_w) + 1) * tab_w;
+                let spaces = (next.saturating_sub(cur) / (CHAR_W + LETTER_SPACING)).max(1);
+                for _ in 0..spaces {
+                    self.putc_locked(g, b' ');
+                }
+            }
+            c => {
+                if c.is_ascii_graphic() || c == b' ' {
+                    self.render_char_locked(g, c as char);
+                }
+            }
+        }
+    }
+
+    fn handle_utf8_byte_locked(&mut self, g: &mut Gpu, byte: u8) {
+        loop {
+            if self.utf8_needed == 0 {
+                match byte {
+                    0xC2..=0xDF => {
+                        self.utf8_needed = 1;
+                        self.utf8_codepoint = u32::from(byte & 0x1F);
+                        self.utf8_min = 0x80;
+                        return;
+                    }
+                    0xE0..=0xEF => {
+                        self.utf8_needed = 2;
+                        self.utf8_codepoint = u32::from(byte & 0x0F);
+                        self.utf8_min = 0x800;
+                        return;
+                    }
+                    0xF0..=0xF4 => {
+                        self.utf8_needed = 3;
+                        self.utf8_codepoint = u32::from(byte & 0x07);
+                        self.utf8_min = 0x10000;
+                        return;
+                    }
+                    _ => {
+                        self.render_char_locked(g, '\u{FFFD}');
+                        return;
+                    }
+                }
+            } else if (0x80..=0xBF).contains(&byte) {
+                self.utf8_codepoint = (self.utf8_codepoint << 6) | u32::from(byte & 0x3F);
+                self.utf8_needed = self.utf8_needed.saturating_sub(1);
+                if self.utf8_needed == 0 {
+                    let cp = self.utf8_codepoint;
+                    let min = self.utf8_min;
+                    self.reset_utf8_state();
+                    if cp < min || cp > 0x10FFFF || (0xD800..=0xDFFF).contains(&cp) {
+                        self.render_char_locked(g, '\u{FFFD}');
+                    } else if let Some(ch) = core::char::from_u32(cp) {
+                        self.render_char_locked(g, ch);
+                    } else {
+                        self.render_char_locked(g, '\u{FFFD}');
+                    }
+                }
+                return;
+            } else {
+                self.reset_utf8_state();
+                self.render_char_locked(g, '\u{FFFD}');
+                continue;
+            }
+        }
     }
 
     fn handle_ansi_locked(&mut self, g: &mut Gpu, b: u8) -> bool {
@@ -412,41 +526,23 @@ impl FbConsole {
     }
 
     fn putc_locked(&mut self, g: &mut Gpu, byte: u8) {
-        if self.handle_ansi_locked(g, byte) {
+        if byte < 0x80 {
+            if self.utf8_needed != 0 {
+                self.reset_utf8_state();
+                self.render_char_locked(g, '\u{FFFD}');
+            }
+            self.handle_ascii_byte_locked(g, byte);
             return;
         }
-        match byte {
-            b'\n' => self.newline(g),
-            b'\r' => self.x = BORDER_PADDING,
-            0x08 => self.cursor_left(),
-            0x7f => self.cursor_left(),
-            b'\t' => {
-                let tab_w = 4 * (CHAR_W + LETTER_SPACING);
-                let cur = self.x.saturating_sub(BORDER_PADDING);
-                let next = ((cur / tab_w) + 1) * tab_w;
-                let spaces = (next.saturating_sub(cur) / (CHAR_W + LETTER_SPACING)).max(1);
-                for _ in 0..spaces {
-                    self.putc_locked(g, b' ');
-                }
-            }
-            c => {
-                if self.x + CHAR_W + BORDER_PADDING >= self.width {
-                    self.newline(g);
-                }
-                if self.y + CHAR_H + BORDER_PADDING >= self.height {
-                    self.newline(g);
-                }
 
-                let ch = if c.is_ascii_graphic() || c == b' ' {
-                    c as char
-                } else {
-                    '?'
-                };
-
-                self.draw_char_at(g, ch, self.x, self.y);
-                self.x += CHAR_W + LETTER_SPACING;
-            }
+        if self.esc || self.csi {
+            self.esc = false;
+            self.csi = false;
+            self.csi_num = 0;
+            self.csi_have_num = false;
         }
+
+        self.handle_utf8_byte_locked(g, byte);
     }
 
     pub fn putc(&mut self, byte: u8) {

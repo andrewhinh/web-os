@@ -34,12 +34,20 @@ impl Writer {
     fn print(&self, c: u8) {
         console::putc(c)
     }
+
+    fn print_char(&self, c: char) {
+        if c.is_ascii() {
+            self.print(c as u8);
+        } else {
+            console::putc_char(c)
+        }
+    }
 }
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            self.print(byte);
+        for ch in s.chars() {
+            self.print_char(ch);
         }
         Ok(())
     }
