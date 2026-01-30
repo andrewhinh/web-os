@@ -1,6 +1,6 @@
 # Web OS
 
-A Rust re-implementation of xv6 for RISC-V, available on the web.
+A UNIX-like Rust OS built for RISC-V, available on the web.
 
 ## Development
 
