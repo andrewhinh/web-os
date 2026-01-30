@@ -8,6 +8,7 @@
   };
 
   let canvasEl: HTMLCanvasElement | null = null;
+  let keyboardEl: HTMLInputElement | null = null;
   let status: RfbStatus = { state: "idle" };
   let statusText = "Idle";
 
@@ -178,6 +179,7 @@
       rfb = new RfbClient({
         dc,
         canvas: canvasEl,
+        keyboardInput: keyboardEl,
         statusCb: setStatus,
         onCommand: () => void trackRunCmd(),
       });
@@ -396,7 +398,16 @@
   <main class="flex flex-1 flex-col items-center justify-center">
     <div class="w-full max-w-5xl">
       <section class="relative w-full aspect-4/3 [&_canvas]:size-full! [&_canvas]:object-contain">
-        <canvas bind:this={canvasEl} class="block bg-black cursor-none"></canvas>
+        <input
+          bind:this={keyboardEl}
+          type="text"
+          inputmode="text"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          class="absolute left-0 top-0 h-px w-px opacity-0"
+        />
+        <canvas bind:this={canvasEl} class="block bg-black cursor-none touch-none"></canvas>
 
         {#if status.state !== "connected"}
           <div class="absolute inset-0 flex items-center justify-center text-2xl bg-black/60">
