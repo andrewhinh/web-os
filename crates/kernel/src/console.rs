@@ -253,6 +253,14 @@ pub fn set_fg_pgrp(sid: usize, pgid: usize) -> Result<()> {
 // called by printf, and to echo input characters,
 // but not from write().
 //
+pub fn putc_char(c: char) {
+    let mut buf = [0u8; 4];
+    let encoded = c.encode_utf8(&mut buf);
+    for &b in encoded.as_bytes() {
+        putc(b);
+    }
+}
+
 pub fn putc(c: u8) {
     if c == ctrl(b'H') {
         uart::putc_sync(BS);
