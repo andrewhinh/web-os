@@ -36,6 +36,7 @@ use webrtc::{
 };
 
 use crate::metrics::{Metrics, MetricsSnapshot};
+use crate::qemu::QemuManager;
 
 const DEFAULT_STUN_SERVER: &str = "stun:stun.relay.metered.ca:80";
 const TURN_SERVERS: [&str; 4] = [
@@ -53,22 +54,26 @@ pub struct AppState {
     sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
     metrics: Metrics,
     metrics_tx: broadcast::Sender<MetricsSnapshot>,
+    qemu: QemuManager,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    pub fn new(qemu: QemuManager) -> Self {
         let (metrics_tx, _rx) = broadcast::channel(METRICS_BUFFER);
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             metrics: Metrics::from_env(),
             metrics_tx,
+            qemu,
         }
     }
-}
 
-impl AppState {
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    pub fn qemu(&self) -> &QemuManager {
+        &self.qemu
     }
 
     pub fn metrics_subscribe(&self) -> broadcast::Receiver<MetricsSnapshot> {
