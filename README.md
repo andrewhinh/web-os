@@ -2,6 +2,34 @@
 
 A UNIX-like Rust OS built for RISC-V, available on the web.
 
+Features include:
+
+- COW fork, mmap, and kernel threads.
+- Async kernel executor that handles UART/disk/network I/O cooperatively without
+  blocking CPUs in addition to the preemptive user scheduler.
+- APLIC/MSI interrupts for per-hart message-signaled delivery, replacing PLIC.
+- Signals with interval timers, job control, and poll/select.
+- IPC including shared memory and AF_UNIX sockets.
+- Journaling filesystem with fsync, crash recovery, symlinks, and permissions.
+- TCP/UDP networking over virtio-net.
+- Framebuffer with UTF-8/ANSI support and keyboard/mouse input.
+- Web UI that streams the framebuffer via VNC over WebRTC.
+
+Try out some commands:
+
+```bash
+sleep 30 &
+jobs
+fg %1
+touch /tmp/a && ln -s /tmp/a /tmp/a.sym && ls /tmp
+kv "p,1,hello" "p,2,world" "a"
+kv "g,1"
+wserver &
+jobs
+kill <pid>
+test_fsync --journal
+```
+
 ## Development
 
 ### Installation
@@ -50,7 +78,7 @@ fly deploy
 - [x] dual stream for pipes (kernel-space)
 - [x] [COW mappings](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
 - [x] [mmap](https://pages.cs.wisc.edu/~remzi/OSTEP/lab-projects-xv6.pdf)
-- [x] IPC: shared memory + semaphores
+- [x] IPC: shared memory
 - [x] [kernel threads](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-xv6-threads)
 - [x] proc control: signals + waitpid opts + interval timers
 - [x] tty/job control: pgrp + sessions + controlling TTY + fg/bg
@@ -70,7 +98,7 @@ fly deploy
 - [x] [MSIs](https://blog.stephenmarz.com/2022/06/30/msi/) +
       [APLIC](https://blog.stephenmarz.com/2022/07/26/aplic/)
 - [x] [framebuffer](https://blog.stephenmarz.com/2020/11/11/risc-v-os-using-rust-graphics/)
-      and
+      with UTF-8/ANSI escape code support and
       [keyboard/mouse input](https://blog.stephenmarz.com/2020/08/03/risc-v-os-using-rust-input-devices/)
 
 ### User-Space
@@ -84,6 +112,7 @@ fly deploy
 - [x] [mapreduce](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce)
 - [x] [fsck](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/filesystems-checker)
 - [x] [memcached](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/initial-memcached)
+- [x] [bash-like shell](<https://en.wikipedia.org/wiki/Bash_(Unix_shell)>)
 
 ### App
 
