@@ -37,7 +37,13 @@ use webrtc::{
 
 use crate::metrics::{Metrics, MetricsSnapshot};
 
-const DEFAULT_STUN_SERVER: &str = "stun:stun.l.google.com:19302";
+const DEFAULT_STUN_SERVER: &str = "stun:stun.relay.metered.ca:80";
+const TURN_SERVERS: [&str; 4] = [
+    "turn:global.relay.metered.ca:80",
+    "turn:global.relay.metered.ca:80?transport=tcp",
+    "turn:global.relay.metered.ca:443",
+    "turns:global.relay.metered.ca:443?transport=tcp",
+];
 const DEFAULT_SESSION_OWNER: &str = "local";
 const METRICS_BUFFER: usize = 64;
 const CANDIDATE_BUFFER: usize = 64;
@@ -364,22 +370,25 @@ async fn bridge_vnc(dc: Arc<RTCDataChannel>, closed: Arc<Notify>) -> anyhow::Res
 }
 
 fn build_ice_servers() -> Vec<RTCIceServer> {
-    let stun_servers = std::env::var("STUN_SERVERS").unwrap_or_else(|_| DEFAULT_STUN_SERVER.into());
-    let stun_urls: Vec<String> = stun_servers
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-
-    vec![RTCIceServer {
-        urls: if stun_urls.is_empty() {
-            vec![DEFAULT_STUN_SERVER.to_string()]
-        } else {
-            stun_urls
-        },
+    let mut servers = vec![RTCIceServer {
+        urls: vec![DEFAULT_STUN_SERVER.to_string()],
         ..Default::default()
-    }]
+    }];
+
+    let turn_username = std::env::var("TURN_USERNAME").ok().and_then(empty_to_none);
+    let turn_credential = std::env::var("TURN_CREDENTIAL")
+        .ok()
+        .and_then(empty_to_none);
+    if let (Some(username), Some(credential)) = (turn_username, turn_credential) {
+        servers.push(RTCIceServer {
+            urls: TURN_SERVERS.iter().map(|s| s.to_string()).collect(),
+            username,
+            credential,
+            ..Default::default()
+        });
+    }
+
+    servers
 }
 
 fn parse_port_range(s: &str) -> Option<(u16, u16)> {
