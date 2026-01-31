@@ -1,7 +1,7 @@
 #![no_std]
 
 use ulib::{
-    env,
+    env, eprintln,
     fs::File,
     io::{Read, Write},
     stdio::{stdin, stdout},
@@ -16,9 +16,23 @@ fn main() {
         return;
     }
 
+    let mut failed = false;
     for arg in args.skip(1) {
-        let file = File::open(arg).unwrap();
-        cat(file).unwrap();
+        match File::open(arg) {
+            Ok(file) => {
+                if let Err(e) = cat(file) {
+                    eprintln!("{}", e);
+                    failed = true;
+                }
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        let _ = sys::exit(1);
     }
 }
 

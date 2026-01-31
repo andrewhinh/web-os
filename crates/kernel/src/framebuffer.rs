@@ -1,3 +1,7 @@
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::{
     spinlock::Mutex,
     virtio_gpu::{GPU, Gpu, PixelFormat},
@@ -10,6 +14,7 @@ const BORDER_PADDING: usize = 2;
 const LINE_SPACING: usize = 2;
 const LETTER_SPACING: usize = 0;
 const SCALE: usize = 2;
+const SCROLLBACK_LINES: usize = 200;
 
 const CHAR_W: usize = 8 * SCALE;
 const CHAR_H: usize = 8 * SCALE;
@@ -29,6 +34,15 @@ pub struct FbConsole {
     height: usize,
     stride: usize,
     fmt: PixelFormat,
+    cols: usize,
+    rows: usize,
+    max_lines: usize,
+    line_base: usize,
+    line_count: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+    view_offset: usize,
+    lines: Vec<Vec<u8>>,
 
     // dirty rectangle tracking so we only transfer/flush changed pixels
     dirty: bool,
@@ -109,6 +123,15 @@ impl FbConsole {
             height: 0,
             stride: 0,
             fmt: PixelFormat::Bgrx8888,
+            cols: 0,
+            rows: 0,
+            max_lines: 0,
+            line_base: 0,
+            line_count: 0,
+            cursor_line: 0,
+            cursor_col: 0,
+            view_offset: 0,
+            lines: Vec::new(),
 
             dirty: false,
             dirty_minx: 0,
@@ -147,6 +170,17 @@ impl FbConsole {
         self.x = BORDER_PADDING;
         self.y = BORDER_PADDING;
         self.inited = true;
+        self.cols =
+            (self.width.saturating_sub(2 * BORDER_PADDING) / (CHAR_W + LETTER_SPACING)).max(1);
+        self.rows =
+            (self.height.saturating_sub(2 * BORDER_PADDING) / (CHAR_H + LINE_SPACING)).max(1);
+        self.max_lines = self.rows.saturating_add(SCROLLBACK_LINES).max(1);
+        self.lines = (0..self.max_lines).map(|_| vec![b' '; self.cols]).collect();
+        self.line_base = 0;
+        self.line_count = 1;
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.view_offset = 0;
 
         // clear screen once, then replay any early boot output captured before the
         // GPU/scanout came up
@@ -191,6 +225,200 @@ impl FbConsole {
         }
     }
 
+    fn line_index(&self, abs_line: usize) -> usize {
+        abs_line % self.max_lines
+    }
+
+    fn clear_line_buf(&mut self, abs_line: usize) {
+        let idx = self.line_index(abs_line);
+        for b in &mut self.lines[idx] {
+            *b = b' ';
+        }
+    }
+
+    fn visible_start_line(&self) -> usize {
+        let end_line = self.line_base + self.line_count - 1;
+        let mut start = if end_line + 1 > self.rows {
+            end_line + 1 - self.rows
+        } else {
+            self.line_base
+        };
+        let max_offset = start.saturating_sub(self.line_base);
+        let offset = self.view_offset.min(max_offset);
+        start = start.saturating_sub(offset);
+        start
+    }
+
+    fn update_cursor_xy(&mut self) {
+        let cell_w = CHAR_W + LETTER_SPACING;
+        let cell_h = CHAR_H + LINE_SPACING;
+        let start = self.visible_start_line();
+        let row = self
+            .cursor_line
+            .saturating_sub(start)
+            .min(self.rows.saturating_sub(1));
+        let col = self.cursor_col.min(self.cols.saturating_sub(1));
+        self.x = BORDER_PADDING + col.saturating_mul(cell_w);
+        self.y = BORDER_PADDING + row.saturating_mul(cell_h);
+    }
+
+    fn redraw_from_buffer(&mut self, g: &mut Gpu) {
+        if let Some(fb) = g.fb_mut() {
+            let bg = self.fmt.pack_rgba(0, 0, 0, 0xff);
+            fb.fill(bg);
+            self.mark_dirty_rect(0, 0, self.width, self.height);
+        }
+
+        let cell_w = CHAR_W + LETTER_SPACING;
+        let cell_h = CHAR_H + LINE_SPACING;
+        let start_line = self.visible_start_line();
+        let end_line = self.line_base + self.line_count;
+
+        for row in 0..self.rows {
+            let abs = start_line + row;
+            if abs >= end_line {
+                continue;
+            }
+            let idx = self.line_index(abs);
+            for col in 0..self.cols {
+                let ch = self.lines[idx][col];
+                if ch == b' ' {
+                    continue;
+                }
+                let px = BORDER_PADDING + col * cell_w;
+                let py = BORDER_PADDING + row * cell_h;
+                self.draw_char_at(g, ch as char, px, py);
+            }
+        }
+
+        self.update_cursor_xy();
+    }
+
+    fn clear_row_area(&mut self, g: &mut Gpu, row: usize) {
+        let Some(fb) = g.fb_mut() else {
+            return;
+        };
+        let bg = self.fmt.pack_rgba(0, 0, 0, 0xff);
+        let cell_h = CHAR_H + LINE_SPACING;
+        let y0 = BORDER_PADDING + row.saturating_mul(cell_h);
+        let y1 = (y0 + cell_h).min(self.height);
+        for y in y0..y1 {
+            let off = y * self.stride;
+            for p in &mut fb[off..(off + self.width)] {
+                *p = bg;
+            }
+        }
+        self.mark_dirty_rect(0, y0, self.width, y1 - y0);
+    }
+
+    fn draw_line_row(&mut self, g: &mut Gpu, row: usize, abs_line: usize) {
+        self.clear_row_area(g, row);
+        let end_line = self.line_base + self.line_count;
+        if abs_line >= end_line {
+            return;
+        }
+        let cell_w = CHAR_W + LETTER_SPACING;
+        let cell_h = CHAR_H + LINE_SPACING;
+        let idx = self.line_index(abs_line);
+        for col in 0..self.cols {
+            let ch = self.lines[idx][col];
+            if ch == b' ' {
+                continue;
+            }
+            let px = BORDER_PADDING + col * cell_w;
+            let py = BORDER_PADDING + row * cell_h;
+            self.draw_char_at(g, ch as char, px, py);
+        }
+    }
+
+    fn scroll_view(&mut self, g: &mut Gpu, delta_lines: isize) {
+        let lines = if delta_lines < 0 {
+            (-delta_lines) as usize
+        } else {
+            delta_lines as usize
+        };
+        let line_px = CHAR_H + LINE_SPACING;
+        let shift_px = lines.saturating_mul(line_px);
+        if shift_px >= self.height {
+            self.redraw_from_buffer(g);
+            return;
+        }
+        let Some(fb) = g.fb_mut() else {
+            return;
+        };
+        let total = self.height * self.stride;
+        let scroll = shift_px * self.stride;
+        let bg = self.fmt.pack_rgba(0, 0, 0, 0xff);
+
+        if delta_lines > 0 {
+            fb.copy_within(scroll..total, 0);
+            for p in &mut fb[(total - scroll)..total] {
+                *p = bg;
+            }
+        } else {
+            fb.copy_within(0..(total - scroll), scroll);
+            for p in &mut fb[0..scroll] {
+                *p = bg;
+            }
+        }
+        self.mark_dirty_rect(0, 0, self.width, self.height);
+
+        let start_line = self.visible_start_line();
+        if delta_lines > 0 {
+            for i in 0..lines {
+                let row = self.rows - lines + i;
+                let abs_line = start_line + row;
+                self.draw_line_row(g, row, abs_line);
+            }
+        } else {
+            for i in 0..lines {
+                let row = i;
+                let abs_line = start_line + row;
+                self.draw_line_row(g, row, abs_line);
+            }
+        }
+    }
+
+    fn ensure_bottom(&mut self, g: &mut Gpu) {
+        if self.view_offset != 0 {
+            self.view_offset = 0;
+            self.redraw_from_buffer(g);
+        }
+    }
+
+    fn adjust_scrollback(&mut self, g: &mut Gpu, delta: isize) {
+        let max_offset = self.line_count.saturating_sub(self.rows);
+        let cur = self.view_offset as isize;
+        let mut next = cur.saturating_add(delta);
+        if next < 0 {
+            next = 0;
+        }
+        let max_off = max_offset as isize;
+        if next > max_off {
+            next = max_off;
+        }
+        let next = next as usize;
+        if next != self.view_offset {
+            let old_start = self.visible_start_line();
+            self.view_offset = next;
+            let new_start = self.visible_start_line();
+            let diff = new_start as isize - old_start as isize;
+            let diff_abs = if diff < 0 {
+                (-diff) as usize
+            } else {
+                diff as usize
+            };
+            if diff_abs >= self.rows {
+                self.redraw_from_buffer(g);
+            } else if diff != 0 {
+                self.scroll_view(g, diff);
+                self.update_cursor_xy();
+            } else {
+                self.update_cursor_xy();
+            }
+        }
+    }
+
     fn flush_dirty_locked(&mut self, g: &mut Gpu) {
         if !self.dirty {
             return;
@@ -214,6 +442,16 @@ impl FbConsole {
         }
         self.x = BORDER_PADDING;
         self.y = BORDER_PADDING;
+        self.line_base = 0;
+        self.line_count = 1;
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.view_offset = 0;
+        for line in &mut self.lines {
+            for b in line {
+                *b = b' ';
+            }
+        }
         self.esc = false;
         self.csi = false;
         self.csi_num = 0;
@@ -246,6 +484,18 @@ impl FbConsole {
 
     fn newline(&mut self, g: &mut Gpu) {
         let line_px = CHAR_H + LINE_SPACING;
+        self.cursor_line = self.cursor_line.saturating_add(1);
+        self.cursor_col = 0;
+        if self.cursor_line >= self.line_base + self.line_count {
+            if self.line_count < self.max_lines {
+                self.line_count += 1;
+            } else {
+                self.line_base = self.line_base.saturating_add(1);
+            }
+            self.clear_line_buf(self.cursor_line);
+        } else {
+            self.clear_line_buf(self.cursor_line);
+        }
         self.y += line_px;
         self.x = BORDER_PADDING;
         if self.y + CHAR_H + BORDER_PADDING >= self.height {
@@ -255,33 +505,28 @@ impl FbConsole {
     }
 
     fn cursor_left(&mut self) {
-        if self.x <= BORDER_PADDING {
+        if self.cursor_col == 0 {
             return;
         }
-        self.x = self.x.saturating_sub(CHAR_W + LETTER_SPACING);
+        self.cursor_col -= 1;
+        self.x = BORDER_PADDING + self.cursor_col * (CHAR_W + LETTER_SPACING);
     }
 
     fn cursor_left_n(&mut self, n: usize) {
         if n == 0 {
             return;
         }
-        let step = CHAR_W + LETTER_SPACING;
-        let want = n.saturating_mul(step);
-        let min_x = BORDER_PADDING;
-        self.x = self.x.saturating_sub(want).max(min_x);
+        self.cursor_col = self.cursor_col.saturating_sub(n);
+        self.x = BORDER_PADDING + self.cursor_col * (CHAR_W + LETTER_SPACING);
     }
 
     fn cursor_right_n(&mut self, n: usize) {
         if n == 0 {
             return;
         }
-        let step = CHAR_W + LETTER_SPACING;
-        let want = n.saturating_mul(step);
-        let max_x = self
-            .width
-            .saturating_sub(BORDER_PADDING)
-            .saturating_sub(CHAR_W);
-        self.x = self.x.saturating_add(want).min(max_x);
+        let max_col = self.cols.saturating_sub(1);
+        self.cursor_col = (self.cursor_col.saturating_add(n)).min(max_col);
+        self.x = BORDER_PADDING + self.cursor_col * (CHAR_W + LETTER_SPACING);
     }
 
     fn erase_to_eol(&mut self, g: &mut Gpu) {
@@ -306,6 +551,11 @@ impl FbConsole {
             }
         }
         self.mark_dirty_rect(x0, y0, x1 - x0, y1 - y0);
+        let idx = self.line_index(self.cursor_line);
+        let start = self.cursor_col.min(self.cols);
+        for b in self.lines[idx][start..].iter_mut() {
+            *b = b' ';
+        }
     }
 
     fn glyph_for_char(c: char) -> &'static [u8; 8] {
@@ -369,14 +619,26 @@ impl FbConsole {
     }
 
     fn render_char_locked(&mut self, g: &mut Gpu, ch: char) {
+        if self.cursor_col >= self.cols {
+            self.newline(g);
+        }
         if self.x + CHAR_W + BORDER_PADDING >= self.width {
             self.newline(g);
         }
         if self.y + CHAR_H + BORDER_PADDING >= self.height {
             self.newline(g);
         }
+        let buf_ch = if ch.is_ascii_graphic() || ch == ' ' {
+            ch as u8
+        } else {
+            b'?'
+        };
+        let idx = self.line_index(self.cursor_line);
+        let col = self.cursor_col.min(self.cols.saturating_sub(1));
+        self.lines[idx][col] = buf_ch;
         self.draw_char_at(g, ch, self.x, self.y);
-        self.x += CHAR_W + LETTER_SPACING;
+        self.cursor_col = self.cursor_col.saturating_add(1);
+        self.x = BORDER_PADDING + self.cursor_col * (CHAR_W + LETTER_SPACING);
     }
 
     fn handle_ascii_byte_locked(&mut self, g: &mut Gpu, byte: u8) {
@@ -385,14 +647,17 @@ impl FbConsole {
         }
         match byte {
             b'\n' => self.newline(g),
-            b'\r' => self.x = BORDER_PADDING,
+            b'\r' => {
+                self.cursor_col = 0;
+                self.x = BORDER_PADDING;
+            }
             0x08 => self.cursor_left(),
             0x7f => self.cursor_left(),
             b'\t' => {
-                let tab_w = 4 * (CHAR_W + LETTER_SPACING);
-                let cur = self.x.saturating_sub(BORDER_PADDING);
+                let tab_w = 4;
+                let cur = self.cursor_col;
                 let next = ((cur / tab_w) + 1) * tab_w;
-                let spaces = (next.saturating_sub(cur) / (CHAR_W + LETTER_SPACING)).max(1);
+                let spaces = next.saturating_sub(cur).max(1);
                 for _ in 0..spaces {
                     self.putc_locked(g, b' ');
                 }
@@ -497,6 +762,7 @@ impl FbConsole {
                         0 => self.erase_to_eol(g),
                         2 => {
                             self.x = BORDER_PADDING;
+                            self.cursor_col = 0;
                             self.erase_to_eol(g);
                         }
                         _ => {}
@@ -526,6 +792,7 @@ impl FbConsole {
     }
 
     fn putc_locked(&mut self, g: &mut Gpu, byte: u8) {
+        self.ensure_bottom(g);
         if byte < 0x80 {
             if self.utf8_needed != 0 {
                 self.reset_utf8_state();
@@ -534,14 +801,12 @@ impl FbConsole {
             self.handle_ascii_byte_locked(g, byte);
             return;
         }
-
         if self.esc || self.csi {
             self.esc = false;
             self.csi = false;
             self.csi_num = 0;
             self.csi_have_num = false;
         }
-
         self.handle_utf8_byte_locked(g, byte);
     }
 
@@ -584,6 +849,19 @@ impl FbConsole {
         }
         self.flush_dirty_locked(g);
     }
+
+    pub fn scrollback(&mut self, delta: isize) {
+        if !self.inited {
+            return;
+        }
+        let mut g = GPU.lock();
+        if !g.is_inited() {
+            return;
+        }
+        let g = &mut *g;
+        self.adjust_scrollback(g, delta);
+        self.flush_dirty_locked(g);
+    }
 }
 
 pub fn init() {
@@ -596,4 +874,8 @@ pub fn putc(c: u8) {
 
 pub fn write(bytes: &[u8]) {
     FBCON.lock().write(bytes)
+}
+
+pub fn scrollback(delta: isize) {
+    FBCON.lock().scrollback(delta)
 }

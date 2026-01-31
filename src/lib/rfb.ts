@@ -119,6 +119,8 @@ export class RfbClient {
   private sendQueue: Array<Uint8Array<ArrayBuffer>> = [];
   private readonly bufferedLow = 256 * 1024;
   private readonly bufferedHigh = 1024 * 1024;
+  private ctrlDown = false;
+  private ctrlSynth = false;
 
   constructor(opts: {
     dc: RTCDataChannel;
@@ -176,6 +178,7 @@ export class RfbClient {
     this.canvas.addEventListener("click", this.onCanvasClick, {
       passive: false,
     });
+    this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
     this.canvas.addEventListener("touchstart", this.onTouchStart, {
       passive: false,
     });
@@ -201,6 +204,7 @@ export class RfbClient {
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     this.canvas.removeEventListener("mouseup", this.onMouseUp);
     this.canvas.removeEventListener("click", this.onCanvasClick);
+    this.canvas.removeEventListener("wheel", this.onWheel);
     this.canvas.removeEventListener("touchstart", this.onTouchStart);
     this.canvas.removeEventListener("touchmove", this.onTouchMove);
     this.canvas.removeEventListener("touchend", this.onTouchEnd);
@@ -539,8 +543,7 @@ export class RfbClient {
   }
 
   private onKeyDown = (ev: KeyboardEvent) => {
-    if (ev.defaultPrevented) return;
-    if (ev.repeat) return;
+    if (ev.repeat && ev.key !== "Backspace") return;
     if (ev.key === "Enter") {
       if (this.pendingCommandChars > 0) {
         this.onCommand?.();
@@ -556,23 +559,36 @@ export class RfbClient {
     const keysym = this.keysymFromEvent(ev);
     if (keysym == null) return;
     ev.preventDefault();
+    if (keysym === KEYSYM.Control) {
+      this.ctrlDown = true;
+    } else if (ev.ctrlKey && !this.ctrlDown) {
+      this.sendKeyEvent(true, KEYSYM.Control);
+      this.ctrlSynth = true;
+    }
     this.sendKeyEvent(true, keysym);
   };
 
   private onKeyUp = (ev: KeyboardEvent) => {
-    if (ev.defaultPrevented) return;
     const keysym = this.keysymFromEvent(ev);
     if (keysym == null) return;
     ev.preventDefault();
     this.sendKeyEvent(false, keysym);
+    if (keysym === KEYSYM.Control) {
+      this.ctrlDown = false;
+    } else if (this.ctrlSynth && !this.ctrlDown) {
+      this.sendKeyEvent(false, KEYSYM.Control);
+      this.ctrlSynth = false;
+    }
   };
 
   private keysymFromEvent(ev: KeyboardEvent): number | null {
     const k = ev.key;
+    if (ev.code === "Backspace") return KEYSYM.BackSpace;
     if (k.length === 1) return k.codePointAt(0) ?? null;
     if (k in KEYSYM) return (KEYSYM as Record<string, number>)[k] ?? null;
     // common aliases
     if (k === "Esc") return KEYSYM.Escape;
+    if (k === "Backspace") return KEYSYM.BackSpace;
     return null;
   }
 
@@ -766,6 +782,22 @@ export class RfbClient {
     }
     const p = this.pointerPos(ev);
     this.sendPointerForEvent(ev, p.x, p.y);
+  };
+
+  private onWheel = (ev: WheelEvent) => {
+    ev.preventDefault();
+    if (ev.deltaY === 0) return;
+    const mask = ev.deltaY < 0 ? 8 : 16;
+    if (document.pointerLockElement === this.canvas) {
+      const x = Math.floor(this.plX);
+      const y = Math.floor(this.plY);
+      this.sendPointerEvent(mask, x, y);
+      this.sendPointerEvent(0, x, y);
+      return;
+    }
+    const p = this.pointerPos(ev);
+    this.sendPointerEvent(mask, p.x, p.y);
+    this.sendPointerEvent(0, p.x, p.y);
   };
 
   private sendPointerLocked(ev: MouseEvent) {

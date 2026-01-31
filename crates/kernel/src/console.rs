@@ -28,13 +28,23 @@ const fn ctrl(x: u8) -> u8 {
 }
 
 const INPUT_BUF_SIZE: usize = 128;
+const HISTORY_LEN: usize = 16;
 pub struct Cons {
     buf: [u8; INPUT_BUF_SIZE],
     r: Wrapping<usize>, // Read index
     w: Wrapping<usize>, // Write index
     e: Wrapping<usize>, // Edit index
+    line_start: Wrapping<usize>,
     session: usize,
     fg_pgrp: usize,
+    history: [[u8; INPUT_BUF_SIZE]; HISTORY_LEN],
+    history_len: [usize; HISTORY_LEN],
+    history_count: usize,
+    history_next: usize,
+    history_cursor: Option<usize>,
+    history_saved: [u8; INPUT_BUF_SIZE],
+    history_saved_len: usize,
+    esc_state: u8,
 }
 
 impl Cons {
@@ -44,9 +54,155 @@ impl Cons {
             r: Wrapping(0),
             w: Wrapping(0),
             e: Wrapping(0),
+            line_start: Wrapping(0),
             session: 0,
             fg_pgrp: 0,
+            history: [[0; INPUT_BUF_SIZE]; HISTORY_LEN],
+            history_len: [0; HISTORY_LEN],
+            history_count: 0,
+            history_next: 0,
+            history_cursor: None,
+            history_saved: [0; INPUT_BUF_SIZE],
+            history_saved_len: 0,
+            esc_state: 0,
         }
+    }
+
+    fn history_ring_index(&self, idx: usize) -> usize {
+        if self.history_count < HISTORY_LEN {
+            idx
+        } else {
+            (self.history_next + idx) % HISTORY_LEN
+        }
+    }
+
+    fn capture_line(&self, out: &mut [u8; INPUT_BUF_SIZE]) -> usize {
+        let mut idx = self.line_start;
+        let mut len = 0;
+        while idx != self.e && len < INPUT_BUF_SIZE {
+            let b = self.buf[idx.0 % INPUT_BUF_SIZE];
+            if b == b'\n' {
+                break;
+            }
+            out[len] = b;
+            len += 1;
+            idx += Wrapping(1);
+        }
+        len
+    }
+
+    fn push_history(&mut self) {
+        let mut tmp = [0u8; INPUT_BUF_SIZE];
+        let len = self.capture_line(&mut tmp);
+        self.history_cursor = None;
+        self.history_saved_len = 0;
+        if len == 0 {
+            return;
+        }
+        let idx = self.history_next;
+        self.history[idx][..len].copy_from_slice(&tmp[..len]);
+        self.history_len[idx] = len;
+        self.history_next = (self.history_next + 1) % HISTORY_LEN;
+        if self.history_count < HISTORY_LEN {
+            self.history_count += 1;
+        }
+    }
+
+    fn clear_line(&mut self) {
+        while self.e != self.line_start {
+            self.e -= Wrapping(1);
+            putc(ctrl(b'H'));
+        }
+    }
+
+    fn insert_byte(&mut self, c: u8) {
+        if c == 0 || (self.e - self.r).0 >= INPUT_BUF_SIZE {
+            return;
+        }
+        putc(c);
+        let e_idx = self.e.0 % INPUT_BUF_SIZE;
+        self.buf[e_idx] = c;
+        self.e += Wrapping(1);
+    }
+
+    fn load_history(&mut self, idx: usize) {
+        let ring_idx = self.history_ring_index(idx);
+        let len = self.history_len[ring_idx];
+        self.clear_line();
+        for i in 0..len {
+            self.insert_byte(self.history[ring_idx][i]);
+        }
+    }
+
+    fn history_up(&mut self) {
+        if self.history_count == 0 {
+            return;
+        }
+        let cursor = match self.history_cursor {
+            None => {
+                let mut tmp = [0u8; INPUT_BUF_SIZE];
+                let len = self.capture_line(&mut tmp);
+                self.history_saved[..len].copy_from_slice(&tmp[..len]);
+                self.history_saved_len = len;
+                self.history_count.saturating_sub(1)
+            }
+            Some(0) => 0,
+            Some(cur) => cur - 1,
+        };
+        self.history_cursor = Some(cursor);
+        self.load_history(cursor);
+    }
+
+    fn history_down(&mut self) {
+        let Some(cur) = self.history_cursor else {
+            return;
+        };
+        if cur + 1 < self.history_count {
+            let next = cur + 1;
+            self.history_cursor = Some(next);
+            self.load_history(next);
+            return;
+        }
+        self.history_cursor = None;
+        self.clear_line();
+        for i in 0..self.history_saved_len {
+            self.insert_byte(self.history_saved[i]);
+        }
+    }
+
+    fn handle_escape(&mut self, c: u8) -> bool {
+        match self.esc_state {
+            0 => {
+                if c == 0x1b {
+                    self.esc_state = 1;
+                    return true;
+                }
+            }
+            1 => {
+                if c == b'[' {
+                    self.esc_state = 2;
+                    return true;
+                }
+                self.esc_state = 0;
+                return true;
+            }
+            2 => {
+                self.esc_state = 0;
+                match c {
+                    b'A' => self.history_up(),
+                    b'B' => self.history_down(),
+                    b'C' => self.history_down(),
+                    b'D' => self.history_up(),
+                    _ => {}
+                }
+                return true;
+            }
+            _ => {
+                self.esc_state = 0;
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -135,6 +291,9 @@ impl Mutex<Cons> {
     //
     pub fn intr(&self, c: u8) {
         let mut cons_guard = self.lock();
+        if cons_guard.handle_escape(c) {
+            return;
+        }
         match c {
             m if m == ctrl(b'C') => {
                 let target = if cons_guard.fg_pgrp == 0 {
@@ -160,19 +319,19 @@ impl Mutex<Cons> {
             m if m == ctrl(b'P') => dump(),
             // Kill line
             m if m == ctrl(b'U') => {
-                while cons_guard.e != cons_guard.w
-                    && cons_guard.buf[(cons_guard.e - Wrapping(1)).0 % INPUT_BUF_SIZE] != b'\n'
-                {
+                while cons_guard.e != cons_guard.line_start {
                     cons_guard.e -= Wrapping(1);
                     putc(ctrl(b'H'));
                 }
+                cons_guard.history_cursor = None;
             }
             // Backspace
             m if m == ctrl(b'H') | b'\x7f' => {
-                if cons_guard.e != cons_guard.w {
+                if cons_guard.e != cons_guard.line_start {
                     cons_guard.e -= Wrapping(1);
                     putc(ctrl(b'H'));
                 }
+                cons_guard.history_cursor = None;
             }
             _ => {
                 if c != 0 && (cons_guard.e - cons_guard.r).0 < INPUT_BUF_SIZE {
@@ -185,11 +344,16 @@ impl Mutex<Cons> {
                     let e_idx = cons_guard.e.0 % INPUT_BUF_SIZE;
                     cons_guard.buf[e_idx] = c;
                     cons_guard.e += Wrapping(1);
+                    cons_guard.history_cursor = None;
 
                     if c == b'\n'
                         || c == ctrl(b'D')
                         || (cons_guard.e - cons_guard.r).0 == INPUT_BUF_SIZE
                     {
+                        if c == b'\n' {
+                            cons_guard.push_history();
+                            cons_guard.line_start = cons_guard.e;
+                        }
                         // wake up CONS.read() if a whole line (or end of line)
                         // has arrived
                         cons_guard.w = cons_guard.e;
