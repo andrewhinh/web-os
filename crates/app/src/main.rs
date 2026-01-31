@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
+use std::{convert::Infallible, path::PathBuf, pin::Pin, time::Duration};
 
 use axum::{
     Json, Router,
@@ -18,15 +18,17 @@ use hyper_util::{
     server::conn::auto,
     service::TowerToHyperService,
 };
+use serde::Serialize;
 use serde_json::to_string;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::{net::TcpListener, process::Command};
+use tokio::net::TcpListener;
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
 };
 
 mod metrics;
+mod qemu;
 mod webrtc_gateway;
 
 use metrics::MetricsSnapshot;
@@ -62,18 +64,21 @@ const QEMU_ARGS: &[&str] = &[
     "virtio-mouse-device,bus=virtio-mmio-bus.4",
     "-vnc",
     "127.0.0.1:0,lossy=on,non-adaptive=on,key-delay-ms=0",
+    "-qmp",
+    qemu::QMP_ARG,
     "-kernel",
 ];
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_crypto_provider();
-    spawn_qemu().await?;
+    let kernel_path = qemu::resolve_kernel_path()?;
+    let qemu = qemu::QemuManager::spawn(QEMU_ARGS, kernel_path).await?;
 
     let static_dir = resolve_static_dir()?;
     let index_html = static_dir.join("index.html");
 
-    let state = AppState::default();
+    let state = AppState::new(qemu);
     let api = Router::new()
         .route("/api/webrtc/config", axum::routing::get(config_handler))
         .route("/api/webrtc/offer", post(offer_handler))
@@ -86,6 +91,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/metrics/visit", post(metrics_visit_handler))
         .route("/api/metrics/run-cmd", post(metrics_run_cmd_handler))
+        .route("/api/qemu/reset", post(qemu_reset_handler))
+        .route("/api/qemu/pause", post(qemu_pause_handler))
+        .route("/api/qemu/resume", post(qemu_resume_handler))
         .layer(middleware::from_fn(api_no_store_middleware));
 
     let static_service = get_service(
@@ -212,6 +220,44 @@ async fn metrics_stream_handler(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
+#[derive(Serialize)]
+struct ControlResponse {
+    status: &'static str,
+}
+
+async fn qemu_reset_handler(
+    State(state): State<AppState>,
+) -> Result<Json<ControlResponse>, (StatusCode, String)> {
+    state
+        .qemu()
+        .reset()
+        .await
+        .map(|_| Json(ControlResponse { status: "ok" }))
+        .map_err(internal_error)
+}
+
+async fn qemu_pause_handler(
+    State(state): State<AppState>,
+) -> Result<Json<ControlResponse>, (StatusCode, String)> {
+    state
+        .qemu()
+        .pause()
+        .await
+        .map(|_| Json(ControlResponse { status: "ok" }))
+        .map_err(internal_error)
+}
+
+async fn qemu_resume_handler(
+    State(state): State<AppState>,
+) -> Result<Json<ControlResponse>, (StatusCode, String)> {
+    state
+        .qemu()
+        .resume()
+        .await
+        .map(|_| Json(ControlResponse { status: "ok" }))
+        .map_err(internal_error)
+}
+
 fn internal_error<E: std::fmt::Display>(err: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
@@ -279,29 +325,4 @@ fn resolve_static_dir() -> anyhow::Result<PathBuf> {
         .unwrap_or(fallback);
 
     Ok(resolved)
-}
-
-async fn spawn_qemu() -> anyhow::Result<()> {
-    let kernel_path = ["release", "debug"]
-        .into_iter()
-        .map(|p| PathBuf::from(format!("target/riscv64gc-unknown-none-elf/{p}/web-os")))
-        .find(|p| p.exists())
-        .ok_or_else(|| anyhow::anyhow!("Kernel not found. Run `cargo build` first."))?;
-
-    let mut cmd = Command::new("qemu-system-riscv64");
-    cmd.args(QEMU_ARGS);
-    cmd.arg(&kernel_path);
-
-    cmd.stdin(Stdio::null());
-
-    let mut child = cmd.spawn()?;
-
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) => eprintln!("QEMU exited: {status}"),
-            Err(err) => eprintln!("QEMU wait failed: {err}"),
-        }
-    });
-
-    Ok(())
 }

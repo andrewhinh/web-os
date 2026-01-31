@@ -27,7 +27,12 @@
   let reconnectAttempts = 0;
   let metricsReconnectAttempts = 0;
   let metricsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let controlBusy = false;
+  let controlError: string | null = null;
+  let qemuState: "running" | "paused" | "restarting" | "unknown" = "unknown";
 
+  const controlBtnClass =
+    "inline-flex items-center justify-center rounded border border-crt-green/50 px-3 py-1 text-lg uppercase tracking-wide transition hover:bg-crt-green/10 disabled:cursor-not-allowed disabled:opacity-40";
   const RETRYABLE_STATUSES = new Set([409, 425, 429, 500, 502, 503, 504]);
   const MAX_RETRIES = 3;
   const RETRY_BASE_MS = 150;
@@ -74,6 +79,9 @@
   const setStatus = (s: RfbStatus) => {
     status = s;
     statusText = statusLabel(s);
+    if (s.state === "connected" && (qemuState === "unknown" || qemuState === "restarting")) {
+      qemuState = "running";
+    }
   };
 
   async function postJson<T>(path: string, body: unknown, attempt = 0): Promise<T> {
@@ -158,6 +166,24 @@
       metricsError = null;
     } catch (err) {
       metricsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function sendQemuControl(action: "reset" | "pause" | "resume") {
+    if (controlBusy) return;
+    controlBusy = true;
+    controlError = null;
+    try {
+      if (action === "reset") qemuState = "restarting";
+      await postJson<{ status: string }>(`/api/qemu/${action}`, {});
+      if (action === "pause") qemuState = "paused";
+      if (action === "resume") qemuState = "running";
+      if (action === "reset") void scheduleReconnect("qemu reset");
+    } catch (err) {
+      controlError = err instanceof Error ? err.message : String(err);
+      if (action === "reset") qemuState = "unknown";
+    } finally {
+      controlBusy = false;
     }
   }
 
@@ -458,9 +484,6 @@
         </span>
         command!
       </div>
-      {#if metricsError}
-        <span class="text-[10px] uppercase tracking-wide opacity-50">metrics offline</span>
-      {/if}
     </div>
     <div class="flex items-center gap-4">
       <a
@@ -504,8 +527,56 @@
           <div class="absolute inset-0 flex items-center justify-center text-2xl bg-black/60">
             {statusText}
           </div>
+        {:else if qemuState === "paused"}
+          <div class="absolute inset-0 flex items-center justify-center text-2xl bg-black/60">
+            Paused
+          </div>
+        {:else if qemuState === "restarting"}
+          <div class="absolute inset-0 flex items-center justify-center text-2xl bg-black/60">
+            Restarting...
+          </div>
         {/if}
       </section>
+      <div
+        class="flex flex-wrap items-center justify-center gap-3"
+      >
+        <button
+          class={controlBtnClass}
+          on:click={() => void sendQemuControl("reset")}
+          disabled={controlBusy}
+        >
+          Reset
+        </button>
+        <button
+          class={`${controlBtnClass} ${qemuState === "paused" ? "bg-crt-green/10" : ""}`}
+          on:click={() => void sendQemuControl("pause")}
+          disabled={controlBusy || qemuState === "paused"}
+        >
+          Pause
+        </button>
+        <button
+          class={controlBtnClass}
+          on:click={() => void sendQemuControl("resume")}
+          disabled={controlBusy || qemuState === "running"}
+        >
+          Resume
+        </button>
+      </div>
     </div>
   </main>
 </div>
+
+{#if metricsError || controlError}
+  <div class="fixed bottom-6 right-6 flex flex-col gap-2 text-md uppercase tracking-wide font-retro">
+    {#if metricsError}
+      <div class="rounded border border-crt-red/50 px-3 py-2 text-crt-red">
+        Metrics offline
+      </div>
+    {/if}
+    {#if controlError}
+      <div class="rounded border border-crt-red/50 px-3 py-2 text-crt-red">
+        {controlError}
+      </div>
+    {/if}
+  </div>
+{/if}
