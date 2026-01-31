@@ -2,6 +2,8 @@
 
 A UNIX-like Rust OS built for RISC-V, available on the web.
 
+![demo](./demo.gif)
+
 Features include:
 
 - COW fork, mmap, and kernel threads.

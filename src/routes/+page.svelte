@@ -178,7 +178,7 @@
       await postJson<{ status: string }>(`/api/qemu/${action}`, {});
       if (action === "pause") qemuState = "paused";
       if (action === "resume") qemuState = "running";
-      if (action === "reset") void scheduleReconnect("qemu reset");
+      if (action === "reset") void scheduleReconnect();
     } catch (err) {
       controlError = err instanceof Error ? err.message : String(err);
       if (action === "reset") qemuState = "unknown";
@@ -191,8 +191,8 @@
     return {
       candidate: c.candidate ?? "",
       sdp_mid: c.sdpMid ?? null,
-      sdp_mline_index: (c.sdpMLineIndex ?? null) as number | null,
-      username_fragment: (c.usernameFragment ?? null) as string | null,
+      sdp_mline_index: c.sdpMLineIndex ?? null,
+      username_fragment: c.usernameFragment ?? null,
     };
   }
 
@@ -226,13 +226,13 @@
     pc.oniceconnectionstatechange = () => {
       if (!pc) return;
       if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
-        void scheduleReconnect(`ice ${pc.iceConnectionState}`);
+        void scheduleReconnect();
       }
     };
     pc.onconnectionstatechange = () => {
       if (!pc) return;
       if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-        void scheduleReconnect(`pc ${pc.connectionState}`);
+        void scheduleReconnect();
       }
     };
 
@@ -253,7 +253,7 @@
     dc.onclose = () => setStatus({ state: "closed" });
     dc.onerror = () => {
       setStatus({ state: "error", error: "data channel error" });
-      void scheduleReconnect("dc error");
+      void scheduleReconnect();
     };
   }
 
@@ -278,8 +278,7 @@
     pc = null;
   }
 
-  async function scheduleReconnect(reason: string) {
-    void reason;
+  async function scheduleReconnect() {
     if (reconnecting || isDestroyed) return;
     reconnecting = true;
     setStatus({ state: "connecting" });
@@ -323,7 +322,7 @@
     iceSource.onerror = () => {
       if (!pc) return;
       if (pc.iceConnectionState === "failed" || pc.connectionState === "failed") {
-        void scheduleReconnect("sse error");
+        void scheduleReconnect();
       }
     };
   }

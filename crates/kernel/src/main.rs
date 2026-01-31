@@ -24,21 +24,21 @@ extern "C" fn main() -> ! {
         let initcode: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bin/_initcode"));
         #[cfg(not(target_os = "none"))]
         let initcode: &'static [u8] = &[];
-        console::init(); // console init
+        console::init();
         println!("kernel is booting");
-        null::init(); // null device init
-        kalloc::init(); // physical memory allocator
-        vm::kinit(); // create kernel page table
-        vm::kinithart(); // turn on paging
-        proc::init(); // process table
-        trap::inithart(); // install kernel trap vector
-        aplic::init(); // set up interrupt controller (APLIC -> IMSIC MSIs)
-        bio::init(); // buffer cache
-        virtio_disk::init(); // emulated hard disk
+        null::init();
+        kalloc::init();
+        vm::kinit();
+        vm::kinithart();
+        proc::init();
+        trap::inithart();
+        aplic::init();
+        bio::init();
+        virtio_disk::init();
         virtio_input::init();
         framebuffer::init();
-        virtio_net::init(); // virtio net
-        net::init(); // net stack
+        virtio_net::init();
+        net::init();
         for cpu in 0..NCPU {
             task::init_cpu(cpu);
         }
@@ -51,8 +51,8 @@ extern "C" fn main() -> ! {
         while !STARTED.load(Ordering::SeqCst) {
             core::hint::spin_loop()
         }
-        vm::kinithart(); // turn on paging
-        trap::inithart(); // install kernel trap vector
+        vm::kinithart();
+        trap::inithart();
     }
     scheduler()
 }

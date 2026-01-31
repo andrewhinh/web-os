@@ -120,7 +120,6 @@ macro_rules! kmain {
     ($path:path) => {
         #[unsafe(export_name = "main")]
         pub extern "C" fn __main() -> ! {
-            // type check the given path
             let f: extern "C" fn() -> ! = $path;
 
             f()

@@ -6,10 +6,8 @@
 // # Safety:
 // If the memory layout of T is fixed
 pub unsafe fn as_bytes<T: ?Sized>(refs: &T) -> &[u8] {
-    unsafe {
-        let len = core::mem::size_of_val(refs);
-        core::slice::from_raw_parts(refs as *const T as *const u8, len)
-    }
+    let len = core::mem::size_of_val(refs);
+    unsafe { core::slice::from_raw_parts(refs as *const T as *const u8, len) }
 }
 
 // Gets the bytes of the value mutably.
@@ -20,10 +18,8 @@ pub unsafe fn as_bytes<T: ?Sized>(refs: &T) -> &[u8] {
 // # Safety:
 // If the memory layout of T is fixed
 pub unsafe fn as_bytes_mut<T: ?Sized>(refs: &mut T) -> &mut [u8] {
-    unsafe {
-        let len = core::mem::size_of_val(refs);
-        core::slice::from_raw_parts_mut(refs as *mut T as *mut u8, len)
-    }
+    let len = core::mem::size_of_val(refs);
+    unsafe { core::slice::from_raw_parts_mut(refs as *mut T as *mut u8, len) }
 }
 
 // Array Macro for const variables
