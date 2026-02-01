@@ -41,7 +41,7 @@ test_fsync --journal
 - [npm](https://nodejs.org/en/download/)
 - [prek](https://prek.j178.dev/installation/)
 - [act](https://nektosact.com/installation/index.html)
-- [flyctl](https://fly.io/docs/flyctl/install/)
+- [fly](https://fly.io/docs/flyctl/install/)
 
 Create an [Open Relay TURN server](https://www.metered.ca/tools/openrelay/)
 account [here](https://dashboard.metered.ca/login?tool=turnserver) for TURN
@@ -64,7 +64,6 @@ act push --bind                                  # test CI
 docker build -t web-os .                         # test kernel build
 docker run --rm -p 8080:8080 web-os              # test kernel run
 
-fly launch
 fly ips allocate-v4                              # allocate a dedicated IPv4 for WebRTC
 fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>
 fly secrets set TURN_USERNAME=<username> TURN_CREDENTIAL=<credential>
