@@ -586,6 +586,27 @@ impl FbConsole {
         let mut maxx = px;
         let mut maxy = py;
 
+        if SCALE == 2 && px + CHAR_W <= self.width && py + CHAR_H <= self.height {
+            for (row, bits) in glyph.iter().enumerate() {
+                let y = py + row * SCALE;
+                let row0 = y * self.stride + px;
+                let row1 = (y + 1) * self.stride + px;
+                for col in 0..8 {
+                    let on = (bits >> (7 - col)) & 1 == 1;
+                    let color = if on { fg } else { bg };
+                    let x = col * SCALE;
+                    let i0 = row0 + x;
+                    let i1 = row1 + x;
+                    buf[i0] = color;
+                    buf[i0 + 1] = color;
+                    buf[i1] = color;
+                    buf[i1 + 1] = color;
+                }
+            }
+            self.mark_dirty_rect(px, py, CHAR_W, CHAR_H);
+            return;
+        }
+
         for (row, bits) in glyph.iter().enumerate() {
             for col in 0..8 {
                 let on = (bits >> (7 - col)) & 1 == 1;

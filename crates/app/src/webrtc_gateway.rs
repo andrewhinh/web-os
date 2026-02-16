@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, stream};
 use ice::udp_network::{EphemeralUDP, UDPNetwork};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use tokio::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{Mutex, Notify, broadcast, mpsc},
+    sync::{Mutex, Notify, RwLock, broadcast, mpsc},
 };
 use uuid::Uuid;
 use webrtc::{
@@ -51,7 +51,7 @@ const CANDIDATE_BUFFER: usize = 64;
 
 #[derive(Clone)]
 pub struct AppState {
-    sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
+    sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
     metrics: Metrics,
     metrics_tx: broadcast::Sender<MetricsSnapshot>,
     qemu: QemuManager,
@@ -61,7 +61,7 @@ impl AppState {
     pub fn new(qemu: QemuManager) -> Self {
         let (metrics_tx, _rx) = broadcast::channel(METRICS_BUFFER);
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             metrics: Metrics::from_env(),
             metrics_tx,
             qemu,
@@ -87,8 +87,8 @@ impl AppState {
 
 struct Session {
     pc: Arc<RTCPeerConnection>,
-    pending_candidates: Arc<Mutex<Vec<TrickleCandidate>>>,
-    candidate_tx: broadcast::Sender<TrickleCandidate>,
+    pending_candidates: Arc<Mutex<Vec<Arc<str>>>>,
+    candidate_tx: broadcast::Sender<Arc<str>>,
 }
 
 #[derive(Deserialize)]
@@ -148,12 +148,12 @@ pub async fn offer_handler(
     State(state): State<AppState>,
     Json(req): Json<OfferRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    if req.kind.to_lowercase() != "offer" {
+    if !req.kind.eq_ignore_ascii_case("offer") {
         return Err((StatusCode::BAD_REQUEST, "expected type=offer".into()));
     }
 
     let session_uuid = Uuid::new_v4();
-    let pending_candidates: Arc<Mutex<Vec<TrickleCandidate>>> = Arc::new(Mutex::new(Vec::new()));
+    let pending_candidates: Arc<Mutex<Vec<Arc<str>>>> = Arc::new(Mutex::new(Vec::new()));
     let (candidate_tx, _candidate_rx) = broadcast::channel(CANDIDATE_BUFFER);
     let session_owner = current_session_owner();
 
@@ -171,7 +171,7 @@ pub async fn offer_handler(
         .map_err(internal_error)?;
 
     {
-        let mut sessions = state.sessions.lock().await;
+        let mut sessions = state.sessions.write().await;
         sessions.insert(
             session_uuid,
             Session {
@@ -204,7 +204,7 @@ pub async fn candidate_handler(
     }
 
     let pc = {
-        let sessions = state.sessions.lock().await;
+        let sessions = state.sessions.read().await;
         let Some(sess) = sessions.get(&session_uuid) else {
             return Err((StatusCode::NOT_FOUND, "unknown session".into()));
         };
@@ -236,7 +236,7 @@ pub async fn stream_handler(
     }
 
     let (pending_candidates, candidate_tx) = {
-        let sessions = state.sessions.lock().await;
+        let sessions = state.sessions.read().await;
         let Some(sess) = sessions.get(&session_uuid) else {
             return Err((StatusCode::NOT_FOUND, "unknown session".into()));
         };
@@ -244,18 +244,18 @@ pub async fn stream_handler(
     };
 
     let initial = drain_pending_candidates(pending_candidates).await;
-    let initial_stream = stream::iter(initial.into_iter().map(|cand| {
-        let data = to_string(&cand).unwrap_or_else(|_| "{}".to_string());
-        Ok::<Event, Infallible>(Event::default().data(data))
-    }));
+    let initial_stream = stream::iter(
+        initial
+            .into_iter()
+            .map(|cand| Ok::<Event, Infallible>(Event::default().data(cand.as_ref()))),
+    );
 
     let rx = candidate_tx.subscribe();
     let updates = stream::unfold(rx, |mut rx| async {
         loop {
             match rx.recv().await {
                 Ok(cand) => {
-                    let data = to_string(&cand).unwrap_or_else(|_| "{}".to_string());
-                    let event = Event::default().data(data);
+                    let event = Event::default().data(cand.as_ref());
                     return Some((Ok::<Event, Infallible>(event), rx));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -328,8 +328,8 @@ fn fly_replay_response(instance: &str) -> Response {
 }
 
 async fn create_peer_connection(
-    pending_candidates: Arc<Mutex<Vec<TrickleCandidate>>>,
-    candidate_tx: broadcast::Sender<TrickleCandidate>,
+    pending_candidates: Arc<Mutex<Vec<Arc<str>>>>,
+    candidate_tx: broadcast::Sender<Arc<str>>,
 ) -> anyhow::Result<Arc<RTCPeerConnection>> {
     let setting_engine = build_setting_engine().await?;
     let api = APIBuilder::new()
@@ -435,9 +435,7 @@ fn to_trickle(c: RTCIceCandidateInit) -> TrickleCandidate {
     }
 }
 
-async fn drain_pending_candidates(
-    pending_candidates: Arc<Mutex<Vec<TrickleCandidate>>>,
-) -> Vec<TrickleCandidate> {
+async fn drain_pending_candidates(pending_candidates: Arc<Mutex<Vec<Arc<str>>>>) -> Vec<Arc<str>> {
     let mut q = pending_candidates.lock().await;
     q.drain(..).collect()
 }
@@ -488,8 +486,8 @@ async fn build_setting_engine() -> anyhow::Result<SettingEngine> {
 
 fn register_pending_candidate_handler(
     pc: Arc<RTCPeerConnection>,
-    pending_candidates: Arc<Mutex<Vec<TrickleCandidate>>>,
-    candidate_tx: broadcast::Sender<TrickleCandidate>,
+    pending_candidates: Arc<Mutex<Vec<Arc<str>>>>,
+    candidate_tx: broadcast::Sender<Arc<str>>,
 ) {
     pc.on_ice_candidate(Box::new(move |cand| {
         let q = pending_candidates.clone();
@@ -498,10 +496,14 @@ fn register_pending_candidate_handler(
             if let Some(cand) = cand {
                 if let Ok(json) = cand.to_json() {
                     let trickle = to_trickle(json);
+                    let serialized = match to_string(&trickle) {
+                        Ok(s) => Arc::<str>::from(s),
+                        Err(_) => Arc::<str>::from("{}"),
+                    };
                     if candidate_tx.receiver_count() == 0 {
-                        q.lock().await.push(trickle.clone());
+                        q.lock().await.push(serialized.clone());
                     }
-                    let _ = candidate_tx.send(trickle);
+                    let _ = candidate_tx.send(serialized);
                 }
             }
         })
@@ -548,7 +550,7 @@ fn register_dc_open(dc: &Arc<RTCDataChannel>, closed_notify: Arc<Notify>) {
 
 fn register_session_cleanup(
     session_id: Uuid,
-    sessions: Arc<Mutex<HashMap<Uuid, Session>>>,
+    sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
     pc: Arc<RTCPeerConnection>,
 ) {
     pc.on_peer_connection_state_change(Box::new(move |state| {
@@ -560,7 +562,7 @@ fn register_session_cleanup(
                     | RTCPeerConnectionState::Failed
                     | RTCPeerConnectionState::Disconnected
             ) {
-                let mut sessions = sessions.lock().await;
+                let mut sessions = sessions.write().await;
                 sessions.remove(&session_id);
             }
         })
@@ -572,16 +574,16 @@ async fn tcp_to_dc_loop(
     dc: Arc<RTCDataChannel>,
     closed: Arc<Notify>,
 ) -> anyhow::Result<()> {
-    let mut buf = vec![0u8; 16 * 1024];
+    let mut buf = BytesMut::with_capacity(64 * 1024);
     loop {
         tokio::select! {
             _ = closed.notified() => break,
-            res = tcp_r.read(&mut buf) => {
+            res = tcp_r.read_buf(&mut buf) => {
                 let n = res?;
                 if n == 0 {
                     break;
                 }
-                let bytes = Bytes::copy_from_slice(&buf[..n]);
+                let bytes = buf.split_to(n).freeze();
                 let _ = dc.send(&bytes).await?;
             }
         }

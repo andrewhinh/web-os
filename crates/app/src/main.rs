@@ -34,6 +34,10 @@ mod webrtc_gateway;
 use metrics::MetricsSnapshot;
 use webrtc_gateway::{AppState, candidate_handler, config_handler, offer_handler, stream_handler};
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const DEFAULT_PORT: u16 = 8080;
 const QEMU_ARGS: &[&str] = &[
     "-machine",

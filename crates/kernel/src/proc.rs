@@ -1169,15 +1169,14 @@ pub fn sleep<T>(chan: usize, mutex_guard: MutexGuard<'_, T>) -> MutexGuard<'_, T
 // Wake up all processes sleeping on chan.
 // Must be called without any "proc" lock.
 pub fn wakeup(chan: usize) {
+    let cur = Cpus::myproc();
     for (idx, p) in PROCS.pool.iter().enumerate() {
-        match Cpus::myproc() {
-            Some(ref cp) if Arc::ptr_eq(p, cp) => (),
-            _ => {
-                let mut guard = p.inner.lock();
-                if guard.state == ProcState::SLEEPING && guard.chan == chan {
-                    make_runnable(idx, &mut guard);
-                }
-            }
+        if cur.as_ref().is_some_and(|cp| Arc::ptr_eq(p, cp)) {
+            continue;
+        }
+        let mut guard = p.inner.lock();
+        if guard.state == ProcState::SLEEPING && guard.chan == chan {
+            make_runnable(idx, &mut guard);
         }
     }
 }

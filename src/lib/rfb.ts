@@ -54,23 +54,18 @@ const KEYSYM = {
 } as const;
 
 class ByteQueue {
-  private buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  private chunks: Array<Uint8Array<ArrayBufferLike>> = [];
+  private head = 0;
+  private headOffset = 0;
+  private buffered = 0;
   private waiters: Array<() => void> = [];
   private isClosed = false;
 
   push(chunk: Uint8Array<ArrayBufferLike>) {
     if (this.isClosed) return;
     if (chunk.length === 0) return;
-    if (this.buf.length === 0) {
-      this.buf = chunk;
-    } else {
-      const merged: Uint8Array<ArrayBufferLike> = new Uint8Array(
-        this.buf.length + chunk.length,
-      );
-      merged.set(this.buf, 0);
-      merged.set(chunk, this.buf.length);
-      this.buf = merged;
-    }
+    this.chunks.push(chunk);
+    this.buffered += chunk.length;
     const w = this.waiters;
     this.waiters = [];
     for (const f of w) f();
@@ -84,12 +79,31 @@ class ByteQueue {
   }
 
   async readExactly(n: number): Promise<Uint8Array> {
-    while (!this.isClosed && this.buf.length < n) {
+    while (!this.isClosed && this.buffered < n) {
       await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
-    if (this.buf.length < n) throw new Error("connection closed");
-    const out = this.buf.slice(0, n);
-    this.buf = this.buf.slice(n);
+    if (this.buffered < n) throw new Error("connection closed");
+
+    const out = new Uint8Array(n);
+    let written = 0;
+    while (written < n) {
+      const chunk = this.chunks[this.head];
+      const avail = chunk.length - this.headOffset;
+      const take = Math.min(avail, n - written);
+      out.set(chunk.subarray(this.headOffset, this.headOffset + take), written);
+      written += take;
+      this.headOffset += take;
+      this.buffered -= take;
+      if (this.headOffset === chunk.length) {
+        this.head += 1;
+        this.headOffset = 0;
+      }
+    }
+
+    if (this.head > 64 && this.head * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
+    }
     return out;
   }
 }
@@ -117,10 +131,12 @@ export class RfbClient {
   private zlibTargetOff = 0;
   private pendingCommandChars = 0;
   private sendQueue: Array<Uint8Array<ArrayBuffer>> = [];
+  private sendQueueHead = 0;
   private readonly bufferedLow = 256 * 1024;
   private readonly bufferedHigh = 1024 * 1024;
   private ctrlDown = false;
   private ctrlSynth = false;
+  private framePresentPending = false;
 
   constructor(opts: {
     dc: RTCDataChannel;
@@ -158,6 +174,7 @@ export class RfbClient {
     this.dc.addEventListener("close", () => {
       this.q.close();
       this.sendQueue = [];
+      this.sendQueueHead = 0;
       this.statusCb({ state: "closed" });
     });
   }
@@ -308,7 +325,22 @@ export class RfbClient {
       throw new Error(`Unsupported encoding: ${enc}`);
     }
 
-    this.ctx.putImageData(this.imageData, 0, 0);
+    this.presentFrameSoon();
+  }
+
+  private presentFrameSoon() {
+    if (this.framePresentPending || !this.imageData) return;
+    this.framePresentPending = true;
+    const present = () => {
+      this.framePresentPending = false;
+      if (!this.imageData) return;
+      this.ctx.putImageData(this.imageData, 0, 0);
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(present);
+    } else {
+      setTimeout(present, 0);
+    }
   }
 
   private ensureZlibStream() {
@@ -900,7 +932,7 @@ export class RfbClient {
     copy.set(buf);
     const out = copy as Uint8Array<ArrayBuffer>;
     if (
-      this.sendQueue.length > 0 ||
+      this.sendQueueHead < this.sendQueue.length ||
       this.dc.bufferedAmount > this.bufferedHigh
     ) {
       this.sendQueue.push(out);
@@ -913,12 +945,20 @@ export class RfbClient {
   private flushSendQueue() {
     if (this.dc.readyState !== "open") return;
     while (
-      this.sendQueue.length > 0 &&
+      this.sendQueueHead < this.sendQueue.length &&
       this.dc.bufferedAmount <= this.bufferedLow
     ) {
-      const next = this.sendQueue.shift();
+      const next = this.sendQueue[this.sendQueueHead];
+      this.sendQueueHead += 1;
       if (!next) break;
       this.dc.send(next);
+    }
+    if (
+      this.sendQueueHead > 64 &&
+      this.sendQueueHead * 2 > this.sendQueue.length
+    ) {
+      this.sendQueue = this.sendQueue.slice(this.sendQueueHead);
+      this.sendQueueHead = 0;
     }
   }
 

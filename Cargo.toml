@@ -30,3 +30,8 @@ libkernel = { path = "crates/kernel", default-features = false }
 
 [dependencies]
 libkernel = { workspace = true, features = ["kernel"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
