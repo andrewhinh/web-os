@@ -13,6 +13,7 @@
 //   than necessary.
 #![allow(clippy::redundant_allocation)]
 use alloc::{
+    collections::BTreeMap,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -53,6 +54,7 @@ pub struct Data {
 pub struct Lru {
     head: Option<Rc<Buf>>,
     tail: Option<Weak<Buf>>,
+    index: BTreeMap<(u32, u32), Weak<Buf>>,
     n: usize,
 }
 unsafe impl Send for Lru {}
@@ -76,6 +78,7 @@ impl Lru {
         Self {
             head: None,
             tail: None,
+            index: BTreeMap::new(),
             n: 0,
         }
     }
@@ -96,13 +99,22 @@ impl Lru {
         self.n += 1;
     }
 
-    fn _get(&self, dev: u32, blockno: u32) -> (bool, Rc<Buf>) {
-        // Is the block already cached?
-        for (i, b) in self.iter().enumerate() {
-            assert!(i < 30, "iter could be an infinite loop.");
-            if b.meta.borrow().dev == dev && b.meta.borrow().blockno == blockno {
-                return (false, b);
+    fn _get(&mut self, dev: u32, blockno: u32) -> (bool, Rc<Buf>) {
+        if let Some(slot) = self.index.get(&(dev, blockno))
+            && let Some(buf) = slot.upgrade()
+        {
+            let hit = {
+                let meta = buf.meta.borrow();
+                meta.dev == dev && meta.blockno == blockno
+            };
+            if hit {
+                return (false, buf);
             }
+        }
+        if let Some(slot) = self.index.get(&(dev, blockno))
+            && slot.upgrade().is_none()
+        {
+            self.index.remove(&(dev, blockno));
         }
 
         // Not cached
@@ -110,8 +122,6 @@ impl Lru {
         for (i, b) in self.iter().rev().enumerate() {
             assert!(i < 30, "iter could be an infinite loop.");
             if Arc::strong_count(&b.data) == 1 {
-                b.meta.borrow_mut().dev = dev;
-                b.meta.borrow_mut().blockno = blockno;
                 return (true, b);
             }
         }
@@ -313,7 +323,20 @@ impl BCache {
     }
 
     fn get(&self, dev: u32, blockno: u32) -> BufGuard {
-        let (recycle, b) = self.lru.lock()._get(dev, blockno);
+        let mut lru = self.lru.lock();
+        let (recycle, b) = lru._get(dev, blockno);
+        if recycle {
+            let mut meta = b.meta.borrow_mut();
+            let old = (meta.dev, meta.blockno);
+            if old != (0, 0) {
+                lru.index.remove(&old);
+            }
+            meta.dev = dev;
+            meta.blockno = blockno;
+            lru.index.insert((dev, blockno), Rc::downgrade(&b));
+        }
+        drop(lru);
+
         let mut sleeplock = b.data.lock();
         if recycle {
             sleeplock.valid = false;
