@@ -2,7 +2,7 @@
 
 A UNIX-like Rust OS built for RISC-V, available on the web.
 
-![demo](./demo.gif)
+![demo](./static/demo.gif)
 
 Features include:
 
@@ -38,7 +38,7 @@ test_fsync --journal
 
 - [rustup](https://rustup.rs/)
 - [qemu](https://www.qemu.org/download/)
-- [npm](https://nodejs.org/en/download/)
+- [Vite+](https://viteplus.dev/guide/)
 - [prek](https://prek.j178.dev/installation/)
 - [act](https://nektosact.com/installation/index.html)
 - [fly](https://fly.io/docs/flyctl/install/)
@@ -48,7 +48,7 @@ account [here](https://dashboard.metered.ca/login?tool=turnserver) for TURN
 server credentials.
 
 ```bash
-npm i
+vp install
 prek install
 fly auth login
 ```
@@ -61,8 +61,8 @@ mprocs                                           # run server and frontend
 
 prek run --all-files                             # run hooks
 act push --bind                                  # test CI
-docker build -t web-os .                         # test kernel build
-docker run --rm -p 8080:8080 web-os              # test kernel run
+docker build -t web-os .                         # test app build
+docker run --rm -p 8080:8080 web-os              # test app run
 
 fly ips allocate-v4                              # allocate a dedicated IPv4 for WebRTC
 fly secrets set ICE_PUBLIC_IPS=<dedicated-ipv4>

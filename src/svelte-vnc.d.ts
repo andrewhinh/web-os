@@ -1,5 +1,5 @@
-declare module "svelte-vnc" {
-  import type { SvelteComponent } from "svelte";
+declare module 'svelte-vnc' {
+  import type { SvelteComponent } from 'svelte';
 
   export interface NoVNCProps {
     host?: string | null;

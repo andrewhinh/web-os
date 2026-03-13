@@ -36,39 +36,23 @@ repos:
         files: (Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|\.cargo/|crates/(?!kernel/)|\.rs$)
         pass_filenames: false
 
-      - id: npm-ci
-        name: npm ci
-        entry: npm ci
+      - id: vp-check-fix
+        name: vp check --fix
+        entry: bash -c 'export CI=true; test -d node_modules || vp install; vp check --fix'
         language: system
-        files: ^(package\.json|package-lock\.json)$
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|package\.json$|pnpm-lock\.yaml$)
         pass_filenames: false
 
-      - id: npm-format
-        name: npm run format
-        entry: bash -c 'test -d node_modules || npm ci; npm run format'
+      - id: vp-test
+        name: vp test
+        entry: bash -c 'export CI=true; test -d node_modules || vp install; vp test'
         language: system
-        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|package\.json$|pnpm-lock\.yaml$)
         pass_filenames: false
 
-      - id: npm-lint
-        name: npm run lint
-        entry: bash -c 'test -d node_modules || npm ci; npm run lint'
+      - id: vp-build
+        name: vp build
+        entry: bash -c 'export CI=true; test -d node_modules || vp install; vp build'
         language: system
-        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
-        pass_filenames: false
-
-      - id: npm-check
-        name: npm run check
-        entry:
-          bash -c 'test -d node_modules || npm ci; npx svelte-kit sync; npm run
-          check'
-        language: system
-        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
-        pass_filenames: false
-
-      - id: npm-build
-        name: npm run build
-        entry: bash -c 'test -d node_modules || npm ci; npm run build'
-        language: system
-        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|eslint\.config\.js$|package\.json$|package-lock\.json$|\.prettierrc$)
+        files: ^(src/|static/|svelte\.config\.js$|vite\.config\.ts$|postcss\.config\.cjs$|tsconfig\.json$|package\.json$|pnpm-lock\.yaml$)
         pass_filenames: false

@@ -10,15 +10,17 @@ COPY --from=planner /app/recipe.json recipe.json
 COPY rust-toolchain.toml .
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nodejs npm qemu-system-riscv64 \
-    && rm -rf /var/lib/apt/lists/*
+    git nodejs qemu-system-riscv64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable pnpm
+ENV CI=true
 RUN rustup show && rustup component add rust-src
 RUN rustup target add riscv64gc-unknown-none-elf
 
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN npm ci && npx svelte-kit sync && npm run build
+RUN pnpm install --no-frozen-lockfile && pnpm exec vp build
 RUN cargo build --target riscv64gc-unknown-none-elf --release
 RUN cargo build -p app --release    
 

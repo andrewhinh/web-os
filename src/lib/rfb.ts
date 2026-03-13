@@ -1,11 +1,11 @@
-import { Unzlib } from "fflate";
+import { Unzlib } from 'fflate';
 
 export type RfbStatus =
-  | { state: "idle" }
-  | { state: "connecting" }
-  | { state: "connected"; width: number; height: number; name: string }
-  | { state: "error"; error: string }
-  | { state: "closed" };
+  | { state: 'idle' }
+  | { state: 'connecting' }
+  | { state: 'connected'; width: number; height: number; name: string }
+  | { state: 'error'; error: string }
+  | { state: 'closed' };
 
 type PixelFormat = {
   bitsPerPixel: number;
@@ -27,7 +27,7 @@ type ServerInit = {
   pixelFormat: PixelFormat;
 };
 
-const RFB_VERSION_38 = "RFB 003.008\n";
+const RFB_VERSION_38 = 'RFB 003.008\n';
 const RFB_ENCODING_RAW = 0;
 const RFB_ENCODING_ZLIB = 6;
 
@@ -82,7 +82,7 @@ class ByteQueue {
     while (!this.isClosed && this.buffered < n) {
       await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
-    if (this.buffered < n) throw new Error("connection closed");
+    if (this.buffered < n) throw new Error('connection closed');
 
     const out = new Uint8Array(n);
     let written = 0;
@@ -148,16 +148,16 @@ export class RfbClient {
     this.dc = opts.dc;
     this.canvas = opts.canvas;
     this.keyboardInput = opts.keyboardInput ?? null;
-    const ctx = this.canvas.getContext("2d", { alpha: false });
-    if (!ctx) throw new Error("canvas 2d ctx unavailable");
+    const ctx = this.canvas.getContext('2d', { alpha: false });
+    if (!ctx) throw new Error('canvas 2d ctx unavailable');
     this.ctx = ctx;
     this.statusCb = opts.statusCb;
     this.onCommand = opts.onCommand;
 
-    this.dc.binaryType = "arraybuffer";
+    this.dc.binaryType = 'arraybuffer';
     this.dc.bufferedAmountLowThreshold = this.bufferedLow;
-    this.dc.addEventListener("message", (ev) => {
-      if (typeof ev.data === "string") return;
+    this.dc.addEventListener('message', (ev) => {
+      if (typeof ev.data === 'string') return;
       if (ev.data instanceof ArrayBuffer) {
         this.q.push(new Uint8Array(ev.data));
         return;
@@ -168,76 +168,76 @@ export class RfbClient {
           .then((ab) => this.q.push(new Uint8Array(ab)));
       }
     });
-    this.dc.addEventListener("bufferedamountlow", () => {
+    this.dc.addEventListener('bufferedamountlow', () => {
       this.flushSendQueue();
     });
-    this.dc.addEventListener("close", () => {
+    this.dc.addEventListener('close', () => {
       this.q.close();
       this.sendQueue = [];
       this.sendQueueHead = 0;
-      this.statusCb({ state: "closed" });
+      this.statusCb({ state: 'closed' });
     });
   }
 
   attachInput() {
     // keyboard
-    window.addEventListener("keydown", this.onKeyDown, { passive: false });
-    window.addEventListener("keyup", this.onKeyUp, { passive: false });
+    window.addEventListener('keydown', this.onKeyDown, { passive: false });
+    window.addEventListener('keyup', this.onKeyUp, { passive: false });
 
     // mouse
-    this.canvas.addEventListener("mousemove", this.onMouseMove, {
+    this.canvas.addEventListener('mousemove', this.onMouseMove, {
       passive: false,
     });
-    this.canvas.addEventListener("mousedown", this.onMouseDown, {
+    this.canvas.addEventListener('mousedown', this.onMouseDown, {
       passive: false,
     });
-    this.canvas.addEventListener("mouseup", this.onMouseUp, { passive: false });
-    this.canvas.addEventListener("click", this.onCanvasClick, {
+    this.canvas.addEventListener('mouseup', this.onMouseUp, { passive: false });
+    this.canvas.addEventListener('click', this.onCanvasClick, {
       passive: false,
     });
-    this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
-    this.canvas.addEventListener("touchstart", this.onTouchStart, {
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.canvas.addEventListener('touchstart', this.onTouchStart, {
       passive: false,
     });
-    this.canvas.addEventListener("touchmove", this.onTouchMove, {
+    this.canvas.addEventListener('touchmove', this.onTouchMove, {
       passive: false,
     });
-    this.canvas.addEventListener("touchend", this.onTouchEnd, {
+    this.canvas.addEventListener('touchend', this.onTouchEnd, {
       passive: false,
     });
-    this.canvas.addEventListener("touchcancel", this.onTouchEnd, {
+    this.canvas.addEventListener('touchcancel', this.onTouchEnd, {
       passive: false,
     });
-    document.addEventListener("pointerlockchange", this.onPointerLockChange, {
+    document.addEventListener('pointerlockchange', this.onPointerLockChange, {
       passive: true,
     });
-    this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   detachInput() {
-    window.removeEventListener("keydown", this.onKeyDown);
-    window.removeEventListener("keyup", this.onKeyUp);
-    this.canvas.removeEventListener("mousemove", this.onMouseMove);
-    this.canvas.removeEventListener("mousedown", this.onMouseDown);
-    this.canvas.removeEventListener("mouseup", this.onMouseUp);
-    this.canvas.removeEventListener("click", this.onCanvasClick);
-    this.canvas.removeEventListener("wheel", this.onWheel);
-    this.canvas.removeEventListener("touchstart", this.onTouchStart);
-    this.canvas.removeEventListener("touchmove", this.onTouchMove);
-    this.canvas.removeEventListener("touchend", this.onTouchEnd);
-    this.canvas.removeEventListener("touchcancel", this.onTouchEnd);
-    document.removeEventListener("pointerlockchange", this.onPointerLockChange);
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    this.canvas.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.canvas.removeEventListener('mouseup', this.onMouseUp);
+    this.canvas.removeEventListener('click', this.onCanvasClick);
+    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.canvas.removeEventListener('touchstart', this.onTouchStart);
+    this.canvas.removeEventListener('touchmove', this.onTouchMove);
+    this.canvas.removeEventListener('touchend', this.onTouchEnd);
+    this.canvas.removeEventListener('touchcancel', this.onTouchEnd);
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
   }
 
   async start() {
-    this.statusCb({ state: "connecting" });
+    this.statusCb({ state: 'connecting' });
     await this.handshake();
     this.attachInput();
     this.statusCb({
-      state: "connected",
+      state: 'connected',
       width: this.fbWidth,
       height: this.fbHeight,
-      name: "",
+      name: '',
     });
     void this.readLoop();
   }
@@ -251,7 +251,7 @@ export class RfbClient {
     this.sendSetEncodings([RFB_ENCODING_ZLIB, RFB_ENCODING_RAW]);
     this.sendFramebufferUpdateRequest(false, 0, 0, init.width, init.height);
     this.statusCb({
-      state: "connected",
+      state: 'connected',
       width: init.width,
       height: init.height,
       name: init.name,
@@ -284,7 +284,7 @@ export class RfbClient {
       }
     } catch (e) {
       this.statusCb({
-        state: "error",
+        state: 'error',
         error: e instanceof Error ? e.message : String(e),
       });
       this.q.close();
@@ -336,7 +336,7 @@ export class RfbClient {
       if (!this.imageData) return;
       this.ctx.putImageData(this.imageData, 0, 0);
     };
-    if (typeof requestAnimationFrame === "function") {
+    if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(present);
     } else {
       setTimeout(present, 0);
@@ -435,7 +435,7 @@ export class RfbClient {
       return;
     }
     if (!pf.trueColor) {
-      throw new Error("RFB trueColor=false not supported");
+      throw new Error('RFB trueColor=false not supported');
     }
 
     const dst = this.imageData.data;
@@ -575,15 +575,15 @@ export class RfbClient {
   }
 
   private onKeyDown = (ev: KeyboardEvent) => {
-    if (ev.repeat && ev.key !== "Backspace") return;
-    if (ev.key === "Enter") {
+    if (ev.repeat && ev.key !== 'Backspace') return;
+    if (ev.key === 'Enter') {
       if (this.pendingCommandChars > 0) {
         this.onCommand?.();
       }
       this.pendingCommandChars = 0;
-    } else if (ev.key === "Backspace") {
+    } else if (ev.key === 'Backspace') {
       this.pendingCommandChars = Math.max(0, this.pendingCommandChars - 1);
-    } else if (ev.key === "Escape") {
+    } else if (ev.key === 'Escape') {
       this.pendingCommandChars = 0;
     } else if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey) {
       this.pendingCommandChars += 1;
@@ -615,12 +615,12 @@ export class RfbClient {
 
   private keysymFromEvent(ev: KeyboardEvent): number | null {
     const k = ev.key;
-    if (ev.code === "Backspace") return KEYSYM.BackSpace;
+    if (ev.code === 'Backspace') return KEYSYM.BackSpace;
     if (k.length === 1) return k.codePointAt(0) ?? null;
     if (k in KEYSYM) return (KEYSYM as Record<string, number>)[k] ?? null;
     // common aliases
-    if (k === "Esc") return KEYSYM.Escape;
-    if (k === "Backspace") return KEYSYM.BackSpace;
+    if (k === 'Esc') return KEYSYM.Escape;
+    if (k === 'Backspace') return KEYSYM.BackSpace;
     return null;
   }
 
@@ -861,7 +861,7 @@ export class RfbClient {
 
   private async negotiateProtocol() {
     const ver = new TextDecoder().decode(await this.q.readExactly(12));
-    if (!ver.startsWith("RFB ")) throw new Error(`bad RFB version: ${ver}`);
+    if (!ver.startsWith('RFB ')) throw new Error(`bad RFB version: ${ver}`);
     this.sendAscii(RFB_VERSION_38);
   }
 
@@ -925,7 +925,7 @@ export class RfbClient {
   }
 
   private send(buf: Uint8Array) {
-    if (this.dc.readyState !== "open") return;
+    if (this.dc.readyState !== 'open') return;
     // Work around TS typed-array generic mismatch (ArrayBuffer vs ArrayBufferLike).
     // We always want to send an ArrayBuffer-backed view.
     const copy = new Uint8Array(buf.byteLength);
@@ -943,7 +943,7 @@ export class RfbClient {
   }
 
   private flushSendQueue() {
-    if (this.dc.readyState !== "open") return;
+    if (this.dc.readyState !== 'open') return;
     while (
       this.sendQueueHead < this.sendQueue.length &&
       this.dc.bufferedAmount <= this.bufferedLow

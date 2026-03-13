@@ -1,10 +1,10 @@
 procs:
   frontend:
     cwd: .
-    shell: npm run dev
+    shell: vp dev
     autostart: true
 
   server:
     cwd: .
-    shell: cargo run -p app
+    shell: cargo build --target riscv64gc-unknown-none-elf && cargo run -p app
     autostart: true
